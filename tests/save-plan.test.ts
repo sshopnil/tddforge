@@ -20,7 +20,8 @@ describe("savePlanArtifacts", () => {
         scripts: ["test"],
         dependencies: [],
         devDependencies: ["vitest"],
-        testDirectories: ["tests"]
+        testDirectories: ["tests"],
+        checkedInTestFiles: []
       },
       plan: {
         summary: "Test summary",

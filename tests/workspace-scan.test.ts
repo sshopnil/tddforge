@@ -22,6 +22,7 @@ describe("workspace scan", () => {
     await mkdir(path.join(workspace, "src"));
     await mkdir(path.join(workspace, "tests"));
     await writeFile(path.join(workspace, "src", "index.ts"), "export const value = 1;\n");
+    await writeFile(path.join(workspace, "tests", "index.test.ts"), "import { it } from \"vitest\";\n");
 
     const result = scanWorkspace(workspace);
 
@@ -31,6 +32,9 @@ describe("workspace scan", () => {
     expect(result.language).toBe("typescript");
     expect(result.moduleSystem).toBe("esm");
     expect(result.testDirectories).toContain("tests");
+    expect(result.checkedInTestFiles).toEqual([
+      { path: path.join("tests", "index.test.ts"), framework: "vitest" }
+    ]);
   });
 
   it("detects jest config in a JavaScript repo", async () => {
@@ -54,5 +58,18 @@ describe("workspace scan", () => {
     expect(result.testFramework).toBe("jest");
     expect(result.language).toBe("javascript");
     expect(result.testDirectories).toContain("lib");
+  });
+
+  it("detects checked-in pytest files", async () => {
+    const workspace = await mkdtemp(path.join(os.tmpdir(), "tddforge-workspace-"));
+    await mkdir(path.join(workspace, "tests"));
+    await writeFile(path.join(workspace, "tests", "test_api.py"), "def test_api():\n    assert True\n");
+
+    const result = scanWorkspace(workspace);
+
+    expect(result.testFramework).toBe("pytest");
+    expect(result.checkedInTestFiles).toEqual([
+      { path: path.join("tests", "test_api.py"), framework: "pytest" }
+    ]);
   });
 });

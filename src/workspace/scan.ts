@@ -1,7 +1,7 @@
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import path from "node:path";
 import { safeJsonParse } from "../utils/json.js";
-import type { PackageManager, SupportedTestFramework, WorkspaceScanResult } from "./types.js";
+import type { CheckedInTestFile, PackageManager, SupportedTestFramework, WorkspaceScanResult } from "./types.js";
 
 interface PackageJsonLike {
   name?: string;
@@ -21,11 +21,12 @@ export function scanWorkspace(workspaceRoot: string): WorkspaceScanResult {
   const devDependencies = Object.keys(packageJson?.devDependencies ?? {});
   const allDependencies = [...dependencies, ...devDependencies];
   const scripts = Object.keys(packageJson?.scripts ?? {});
+  const checkedInTestFiles = detectCheckedInTestFiles(workspaceRoot);
 
   return {
     workspaceRoot,
     packageManager: detectPackageManager(workspaceRoot),
-    testFramework: detectTestFramework(workspaceRoot, allDependencies),
+    testFramework: detectTestFramework(workspaceRoot, allDependencies, checkedInTestFiles),
     projectType: packageJson ? "node" : "unknown",
     language: detectLanguage(workspaceRoot),
     moduleSystem: detectModuleSystem(workspaceRoot, packageJson),
@@ -33,7 +34,8 @@ export function scanWorkspace(workspaceRoot: string): WorkspaceScanResult {
     scripts,
     dependencies,
     devDependencies,
-    testDirectories: detectTestDirectories(workspaceRoot)
+    testDirectories: detectTestDirectories(workspaceRoot),
+    checkedInTestFiles
   };
 }
 
@@ -53,6 +55,7 @@ function detectPackageManager(workspaceRoot: string): PackageManager {
 function detectTestFramework(
   workspaceRoot: string,
   allDependencies: string[],
+  checkedInTestFiles: CheckedInTestFile[],
 ): SupportedTestFramework {
   const vitestConfigExists = ["ts", "js", "mts", "mjs", "cts", "cjs"].some((ext) =>
     existsSync(path.join(workspaceRoot, `vitest.config.${ext}`)),
@@ -66,6 +69,9 @@ function detectTestFramework(
   }
   if (jestConfigExists || allDependencies.includes("jest")) {
     return "jest";
+  }
+  if (checkedInTestFiles.some((file) => file.framework === "pytest")) {
+    return "pytest";
   }
   return "unknown";
 }
@@ -128,4 +134,53 @@ function safeReadDir(workspaceRoot: string): string[] {
     }
   }
   return entries;
+}
+
+function detectCheckedInTestFiles(workspaceRoot: string): CheckedInTestFile[] {
+  return listFiles(workspaceRoot)
+    .filter((filePath) => isTestFile(filePath))
+    .map((filePath) => ({
+      path: path.relative(workspaceRoot, filePath),
+      framework: detectTestFileFramework(filePath)
+    }))
+    .sort((left, right) => left.path.localeCompare(right.path));
+}
+
+function listFiles(directory: string): string[] {
+  const files: string[] = [];
+  for (const entry of readdirSync(directory)) {
+    if (entry === "node_modules" || entry === "dist" || entry === "coverage" || entry.startsWith(".")) {
+      continue;
+    }
+
+    const fullPath = path.join(directory, entry);
+    const stats = statSync(fullPath);
+    if (stats.isDirectory()) {
+      files.push(...listFiles(fullPath));
+    } else if (stats.isFile()) {
+      files.push(fullPath);
+    }
+  }
+  return files;
+}
+
+function isTestFile(filePath: string): boolean {
+  const normalized = filePath.split(path.sep).join("/");
+  return /\.(test|spec)\.[cm]?[jt]sx?$/.test(normalized) ||
+    /(^|\/)test_[^/]+\.py$/.test(normalized) ||
+    /(^|\/)[^/]+_test\.py$/.test(normalized);
+}
+
+function detectTestFileFramework(filePath: string): SupportedTestFramework {
+  if (filePath.endsWith(".py")) {
+    return "pytest";
+  }
+  const content = readFileSync(filePath, "utf8");
+  if (content.includes("vitest")) {
+    return "vitest";
+  }
+  if (content.includes("@jest/globals") || content.includes("jest.")) {
+    return "jest";
+  }
+  return "unknown";
 }

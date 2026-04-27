@@ -3,6 +3,31 @@ export interface ParsedSlashCommand {
   args: string[];
 }
 
+export interface SlashCommandDefinition {
+  name: string;
+  usage: string;
+  description: string;
+  aliases?: string[];
+}
+
+export const SLASH_COMMANDS: SlashCommandDefinition[] = [
+  { name: "help", usage: "/help", description: "Show slash commands" },
+  { name: "pwd", usage: "/pwd", description: "Show current workspace" },
+  { name: "use", usage: "/use <dir>", description: "Switch to another workspace", aliases: ["open"] },
+  { name: "doctor", usage: "/doctor", description: "Validate current provider configuration" },
+  { name: "scan", usage: "/scan", description: "Rescan package manager and test framework" },
+  { name: "context", usage: "/context", description: "Capture folder tree context" },
+  { name: "story", usage: "/story [file]", description: "Choose a story from story/, stories/, or docs/" },
+  { name: "plan", usage: "/plan [file]", description: "Build a TDD plan" },
+  { name: "generate-tests", usage: "/generate-tests [folder]", description: "Create Vitest todo cases from edge cases" },
+  { name: "monitor", usage: "/monitor [on|off]", description: "Show live test suggestions for this workspace" },
+  { name: "save-plan", usage: "/save-plan [name]", description: "Save latest plan to .tddforge-out" },
+  { name: "copy", usage: "/copy", description: "Export a plain-text TUI snapshot for copying" },
+  { name: "config", usage: "/config", description: "Show active provider and workspace config" },
+  { name: "clear", usage: "/clear", description: "Clear the terminal conversation log" },
+  { name: "exit", usage: "/exit", description: "Quit the TUI", aliases: ["quit"] }
+];
+
 export function parseSlashCommand(input: string): ParsedSlashCommand | null {
   const trimmed = input.trim();
   if (!trimmed.startsWith("/")) {
@@ -20,19 +45,24 @@ export function parseSlashCommand(input: string): ParsedSlashCommand | null {
   return { name: name.toLowerCase(), args };
 }
 
+export function getSlashCommandSuggestions(input: string, limit = 6): SlashCommandDefinition[] {
+  const trimmed = input.trimStart();
+  if (!trimmed.startsWith("/")) {
+    return [];
+  }
+
+  const query = trimmed.slice(1).split(/\s+/, 1)[0]?.toLowerCase() ?? "";
+
+  return SLASH_COMMANDS
+    .filter((command) => {
+      const aliases = command.aliases ?? [];
+      return command.name.startsWith(query) || aliases.some((alias) => alias.startsWith(query));
+    })
+    .slice(0, limit);
+}
+
 export const HELP_TEXT = [
-  "/help                 Show slash commands",
-  "/pwd                  Show current workspace",
-  "/use <dir>            Switch to another workspace",
-  "/doctor               Validate current provider configuration",
-  "/scan                 Rescan package manager and test framework",
-  "/context              Capture folder tree context for the current workspace",
-  "/story <file>         Load a story file into the draft buffer",
-  "/plan [file]          Build a TDD plan from the loaded story or a file",
-  "/save-plan [name]     Save latest plan to .tddforge-out/<name>.{json,md}",
-  "/config               Show active provider and workspace config",
-  "/clear                Clear the terminal conversation log",
-  "/exit                 Quit the TUI",
+  ...SLASH_COMMANDS.map((command) => `${command.usage.padEnd(24)} ${command.description}`),
   "",
   "Plain text input updates the in-memory story draft. Then run /plan."
 ].join("\n");

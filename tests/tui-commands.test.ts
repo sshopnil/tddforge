@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { parseSlashCommand } from "../src/tui/commands.js";
+import { getSlashCommandSuggestions, parseSlashCommand } from "../src/tui/commands.js";
 
 describe("parseSlashCommand", () => {
   it("parses slash commands with arguments", () => {
@@ -18,5 +18,10 @@ describe("parseSlashCommand", () => {
 
   it("returns null for non-command input", () => {
     expect(parseSlashCommand("As a user I want a reset flow")).toBeNull();
+  });
+
+  it("suggests commands from slash input", () => {
+    expect(getSlashCommandSuggestions("/mon").map((command) => command.name)).toEqual(["monitor"]);
+    expect(getSlashCommandSuggestions("plain text")).toEqual([]);
   });
 });

@@ -1,5 +1,10 @@
 export type PackageManager = "npm" | "pnpm" | "yarn" | "unknown";
-export type SupportedTestFramework = "vitest" | "jest" | "unknown";
+export type SupportedTestFramework = "vitest" | "jest" | "pytest" | "unknown";
+
+export interface CheckedInTestFile {
+  path: string;
+  framework: SupportedTestFramework;
+}
 
 export interface WorkspaceScanResult {
   workspaceRoot: string;
@@ -13,4 +18,5 @@ export interface WorkspaceScanResult {
   dependencies: string[];
   devDependencies: string[];
   testDirectories: string[];
+  checkedInTestFiles: CheckedInTestFile[];
 }
