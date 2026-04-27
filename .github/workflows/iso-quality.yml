@@ -1,0 +1,52 @@
+name: ISO Quality Checks
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+  workflow_dispatch:
+  schedule:
+    - cron: "0 6 * * 1"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: iso-quality-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  quality-gates:
+    name: ISO-style quality gates
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install exact dependencies
+        run: npm ci
+
+      - name: Verify TypeScript quality
+        run: npm run typecheck
+
+      - name: Verify code style and static rules
+        run: npm run lint
+
+      - name: Verify automated tests
+        run: npm test
+
+      - name: Verify production build
+        run: npm run build
+
+      - name: Verify package contents
+        run: npm pack --dry-run --ignore-scripts
+
+      - name: Audit production dependency risk
+        run: npm audit --audit-level=high
