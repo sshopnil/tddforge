@@ -46,7 +46,7 @@ describe("savePlanArtifacts", () => {
     const json = await readFile(files.jsonPath, "utf8");
 
     expect(markdown).toContain("# TDDForge Test Plan");
-    expect(markdown).!toContain("TC-1: Works");
+    expect(markdown).toContain("TC-1: Works");
     expect(json).toContain('"summary": "Test summary"');
     expect(files.markdownPath.endsWith("password-reset-plan.md")).toBe(true);
     expect(files.jsonPath.endsWith("password-reset-plan.json")).toBe(true);
