@@ -21,9 +21,11 @@ export const SLASH_COMMANDS: SlashCommandDefinition[] = [
   { name: "plan", usage: "/plan [file]", description: "Build a TDD plan" },
   { name: "generate-tests", usage: "/generate-tests [folder]", description: "Create Vitest todo cases from edge cases" },
   { name: "monitor", usage: "/monitor [on|off]", description: "Show live test suggestions for this workspace" },
+  { name: "test-failure", usage: "/test-failure", description: "Show the last failing test message prepared for LLM repair" },
   { name: "save-plan", usage: "/save-plan [name]", description: "Save latest plan to .tddforge-out" },
   { name: "copy", usage: "/copy", description: "Export a plain-text TUI snapshot for copying" },
   { name: "config", usage: "/config", description: "Show active provider and workspace config" },
+  { name: "provider", usage: "/provider [setup|models|model <name>]", description: "Set up Ollama/OpenAI and switch models" },
   { name: "clear", usage: "/clear", description: "Clear the terminal conversation log" },
   { name: "exit", usage: "/exit", description: "Quit the TUI", aliases: ["quit"] }
 ];

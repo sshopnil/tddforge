@@ -1,5 +1,6 @@
 import type { ProviderConfig } from "../config/schema.js";
 import type { GenerateTextInput, LlmProvider, ProviderHealth } from "./types.js";
+import os from "node:os";
 
 interface OllamaTagsResponse {
   models?: Array<{ name: string }>;
@@ -7,6 +8,18 @@ interface OllamaTagsResponse {
 
 interface OllamaGenerateResponse {
   response?: string;
+}
+
+interface OllamaGenerateRequest {
+  model: string;
+  prompt: string;
+  stream: false;
+  options: {
+    num_ctx: number;
+    num_predict: number;
+    num_thread: number;
+    num_gpu: number;
+  };
 }
 
 export class OllamaProvider implements LlmProvider {
@@ -46,8 +59,9 @@ export class OllamaProvider implements LlmProvider {
       body: JSON.stringify({
         model: config.model,
         prompt: `${input.system}\n\n${input.prompt}`,
-        stream: false
-      })
+        stream: false,
+        options: buildOllamaOptions()
+      } satisfies OllamaGenerateRequest)
     });
 
     if (!response.ok) {
@@ -57,4 +71,31 @@ export class OllamaProvider implements LlmProvider {
     const body = (await response.json()) as OllamaGenerateResponse;
     return body.response?.trim() ?? "";
   }
+}
+
+function buildOllamaOptions(): OllamaGenerateRequest["options"] {
+  const cpuCount = typeof os.availableParallelism === "function"
+    ? os.availableParallelism()
+    : os.cpus().length;
+
+  return {
+    num_ctx: readPositiveIntegerEnv("TDDFORGE_OLLAMA_NUM_CTX", 8192),
+    num_predict: readPositiveIntegerEnv("TDDFORGE_OLLAMA_NUM_PREDICT", 2048),
+    num_thread: readPositiveIntegerEnv("TDDFORGE_OLLAMA_NUM_THREAD", Math.max(1, cpuCount - 1)),
+    num_gpu: readIntegerEnv("TDDFORGE_OLLAMA_NUM_GPU", 999)
+  };
+}
+
+function readPositiveIntegerEnv(name: string, fallback: number): number {
+  return Math.max(1, readIntegerEnv(name, fallback));
+}
+
+function readIntegerEnv(name: string, fallback: number): number {
+  const value = process.env[name];
+  if (!value) {
+    return fallback;
+  }
+
+  const parsed = Number.parseInt(value, 10);
+  return Number.isFinite(parsed) ? parsed : fallback;
 }

@@ -5,6 +5,7 @@ import { describe, expect, it } from "vitest";
 import type { ResolvedConfig } from "../src/config/load-config.js";
 import type { LlmProvider, ProviderHealth } from "../src/providers/types.js";
 import { buildPlanFromStoryFile } from "../src/story-engine/planner.js";
+import { buildPlanningPrompt } from "../src/story-engine/prompt.js";
 
 class FakeProvider implements LlmProvider {
   readonly type = "ollama" as const;
@@ -76,5 +77,35 @@ describe("story planner", () => {
     expect(result.plan.requirements).toHaveLength(2);
     expect(result.plan.edgeCases).toContain("Expired reset token");
     expect(result.plan.suggestedTestScenarios[0]?.level).toBe("integration");
+  });
+
+  it("builds compact prompts for local model planning", () => {
+    const prompt = buildPlanningPrompt(
+      "A".repeat(11000),
+      {
+        workspaceRoot: "/repo",
+        packageManager: "npm",
+        testFramework: "vitest",
+        projectType: "node",
+        language: "typescript",
+        moduleSystem: "esm",
+        packageName: "fixture",
+        scripts: ["test"],
+        dependencies: Array.from({ length: 50 }, (_, index) => `dep-${index}`),
+        devDependencies: Array.from({ length: 50 }, (_, index) => `dev-${index}`),
+        testDirectories: ["tests"],
+        checkedInTestFiles: Array.from({ length: 40 }, (_, index) => ({
+          path: `tests/${index}.test.ts`,
+          framework: "vitest"
+        }))
+      },
+      "tree\n".repeat(2000),
+    );
+
+    expect(prompt.prompt).toContain("...truncated...");
+    expect(prompt.prompt).not.toContain("workspaceRoot");
+    expect(prompt.prompt).not.toContain("dep-49");
+    expect(prompt.prompt).not.toContain("dev-49");
+    expect(prompt.prompt).not.toContain("tests/39.test.ts");
   });
 });

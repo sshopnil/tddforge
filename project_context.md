@@ -54,7 +54,9 @@ Navigation:
 
 - `Tab` switches panels: `status`, `monitor`, `session`.
 - `Shift+Tab` goes backward.
-- `Up/Down` navigate input history when not in a selection screen.
+- `Up/Down` scroll the active panel when the input is empty and navigate input history while editing text.
+- When slash command suggestions are visible, `Up/Down` selects a suggestion and Enter runs the highlighted command.
+- Scrollable panels wrap long lines to the current terminal width, clamp scroll position after resize, and auto-follow the latest lines until the user scrolls upward.
 - `/exit` and `/quit` should immediately close the TUI, even during unanswered questions.
 
 Story flow:
@@ -77,8 +79,18 @@ Plan flow:
 Monitor/test flow:
 
 - `/monitor` switches to the monitor tab.
-- Monitor refreshes suggestions only after a new git commit, not every file edit.
+- Monitor refreshes suggestions only after a new git commit.
+- Test commands are not run continuously on startup or commit polling.
+- When monitor mode sees a relevant source or test file edit, it runs the repo test command once, captures pass/fail/skipped counts, extracts the specific failure message, and stores an LLM-ready failure context.
+- `/test-failure` prints the latest captured failure context so an LLM repair can use the exact failing message; test file edits should still be saved only after user review and confirmation.
 - Test status is initialized on startup and displayed in the status panel.
+- Busy TUI actions show an animated progress bar instead of the old `Working...` text.
+
+Provider/model performance:
+
+- Planning prompts compact workspace scan data, cap dependency/test-file lists, and truncate very large story/tree context before sending it to the model.
+- Ollama generation sends bounded runtime options by default: `num_ctx`, `num_predict`, CPU thread count, and GPU layer offload.
+- Ollama runtime options can be overridden with `TDDFORGE_OLLAMA_NUM_CTX`, `TDDFORGE_OLLAMA_NUM_PREDICT`, `TDDFORGE_OLLAMA_NUM_THREAD`, and `TDDFORGE_OLLAMA_NUM_GPU`.
 
 Copy/export:
 

@@ -10,6 +10,9 @@ export function buildPlanningPrompt(
   workspace: WorkspaceScanResult,
   folderTreeContext?: string,
 ): PlanningPrompt {
+  const workspaceSummary = summarizeWorkspaceForPrompt(workspace);
+  const folderTree = compactText(folderTreeContext ?? "", 6000);
+
   return {
     system: [
       "You are TDDForge, a senior test-planning assistant.",
@@ -17,6 +20,7 @@ export function buildPlanningPrompt(
       "Return JSON only. Do not include markdown fences or explanation.",
       "Be careful to distinguish explicit requirements from inferred ones.",
       "Keep output grounded in the story and workspace context.",
+      "Keep strings concise while preserving concrete requirements.",
       "Use this exact JSON shape:",
       JSON.stringify({
         summary: "short summary",
@@ -40,13 +44,38 @@ export function buildPlanningPrompt(
     ].join("\n"),
     prompt: [
       "Workspace context:",
-      JSON.stringify(workspace, null, 2),
-      folderTreeContext ? "" : null,
-      folderTreeContext ? "Workspace tree:" : null,
-      folderTreeContext ?? null,
+      JSON.stringify(workspaceSummary),
+      folderTree ? "" : null,
+      folderTree ? "Workspace tree:" : null,
+      folderTree || null,
       "",
       "User story:",
-      storyText.trim()
+      compactText(storyText, 10000)
     ].filter(Boolean).join("\n")
   };
+}
+
+function summarizeWorkspaceForPrompt(workspace: WorkspaceScanResult): object {
+  return {
+    packageManager: workspace.packageManager,
+    testFramework: workspace.testFramework,
+    projectType: workspace.projectType,
+    language: workspace.language,
+    moduleSystem: workspace.moduleSystem,
+    packageName: workspace.packageName,
+    scripts: workspace.scripts.slice(0, 20),
+    dependencies: workspace.dependencies.slice(0, 40),
+    devDependencies: workspace.devDependencies.slice(0, 40),
+    testDirectories: workspace.testDirectories,
+    checkedInTestFiles: workspace.checkedInTestFiles.slice(0, 30)
+  };
+}
+
+function compactText(value: string, maxLength: number): string {
+  const trimmed = value.trim();
+  if (trimmed.length <= maxLength) {
+    return trimmed;
+  }
+
+  return `${trimmed.slice(0, maxLength)}\n...truncated...`;
 }
