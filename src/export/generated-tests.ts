@@ -34,20 +34,34 @@ interface EdgeCaseTestCase {
 }
 
 function buildEdgeCaseTestCases(result: PlanWorkflowResult): EdgeCaseTestCase[] {
-  return result.plan.edgeCases.map((edgeCase, index) => {
-    const relatedScenario = result.plan.suggestedTestScenarios[index % result.plan.suggestedTestScenarios.length];
+  const scenarioCases = result.plan.suggestedTestScenarios.map((scenario) => ({
+    title: scenario.title,
+    requirementIds: scenario.requirementIds,
+    notes: [
+      `Given: ${scenario.given}`,
+      `When: ${scenario.when}`,
+      `Then: ${scenario.then}`
+    ]
+  }));
 
-    return {
-      title: edgeCase,
-      requirementIds: relatedScenario?.requirementIds ?? [],
-      notes: [
-        relatedScenario ? `Suggested scenario: ${relatedScenario.title}` : "No matching scenario was generated.",
-        relatedScenario ? `Given: ${relatedScenario.given}` : "",
-        relatedScenario ? `When: ${relatedScenario.when}` : "",
-        relatedScenario ? `Then: ${relatedScenario.then}` : ""
-      ].filter(Boolean)
-    };
-  });
+  const scenarioText = result.plan.suggestedTestScenarios
+    .map((scenario) => [
+      scenario.title,
+      scenario.given,
+      scenario.when,
+      scenario.then
+    ].join(" ").toLowerCase())
+    .join("\n");
+
+  const edgeCaseFallbacks = result.plan.edgeCases
+    .filter((edgeCase) => !scenarioText.includes(edgeCase.toLowerCase()))
+    .map((edgeCase) => ({
+      title: `Edge case: ${edgeCase}`,
+      requirementIds: [],
+      notes: [`Plan edge case: ${edgeCase}`]
+    }));
+
+  return [...scenarioCases, ...edgeCaseFallbacks];
 }
 
 function renderEdgeCaseTestFile(framework: SupportedTestFramework, testCases: EdgeCaseTestCase[]): string {

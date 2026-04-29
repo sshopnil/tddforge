@@ -21,6 +21,13 @@ export function buildPlanningPrompt(
       "Be careful to distinguish explicit requirements from inferred ones.",
       "Keep output grounded in the story and workspace context.",
       "Keep strings concise while preserving concrete requirements.",
+      "Generate test scenarios that are directly usable as test cases.",
+      "For every explicit requirement, include at least one scenario that validates the happy path or main behavior.",
+      "For every edge case, include at least one scenario that validates that exact edge case.",
+      "Each scenario title must name the behavior under test, not generic text like should work or handles edge case.",
+      "Use concrete Given/When/Then steps with observable inputs and outcomes.",
+      "Choose the narrowest useful level: unit for pure logic, integration for APIs or persistence, e2e only for full user workflows.",
+      "For small local models: prefer fewer, complete, high-signal scenarios over many vague scenarios.",
       "Use this exact JSON shape:",
       JSON.stringify({
         summary: "short summary",

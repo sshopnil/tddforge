@@ -39,6 +39,41 @@ describe("json utilities", () => {
     expect(result.items).toEqual([{ id: "REQ-1" }, { id: "REQ-2" }]);
   });
 
+  it("extracts only the first complete object when a model appends extra JSON", () => {
+    const result = parseModelJsonObject<{ summary: string }>(
+      `{ "summary": "ok" } { "extra": "ignored" }`,
+    );
+
+    expect(result.summary).toBe("ok");
+  });
+
+  it("merges adjacent top-level JSON objects from local model output", () => {
+    const result = parseModelJsonObject<{
+      summary: string;
+      requirements: Array<{ id: string }>;
+      edgeCases: string[];
+    }>(
+      `{ "summary": "ok" }
+       { "requirements": [{ "id": "REQ-1" }] }
+       { "edgeCases": ["empty input"] }`,
+    );
+
+    expect(result).toEqual({
+      summary: "ok",
+      requirements: [{ id: "REQ-1" }],
+      edgeCases: ["empty input"]
+    });
+  });
+
+  it("keeps braces inside JSON strings while finding the object boundary", () => {
+    const result = extractJsonObject(`
+      { "summary": "Use {literal} braces", "done": true }
+      trailing { ignored: true }
+    `);
+
+    expect(result).toBe('{ "summary": "Use {literal} braces", "done": true }');
+  });
+
   it("throws a clear error when no JSON object exists", () => {
     expect(() => parseModelJsonObject("no json here")).toThrow(
       "Model response did not contain a valid JSON object",

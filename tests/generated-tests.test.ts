@@ -6,7 +6,7 @@ import { generateEdgeCaseTests } from "../src/export/generated-tests.js";
 import type { PlanWorkflowResult } from "../src/story-engine/planner.js";
 
 describe("generateEdgeCaseTests", () => {
-  it("writes Vitest todo cases from plan edge cases", async () => {
+  it("writes Vitest todo cases from plan scenarios and uncovered edge cases", async () => {
     const workspace = await mkdtemp(path.join(os.tmpdir(), "tddforge-generated-tests-"));
     await mkdir(path.join(workspace, "tests"));
     await writeFile(path.join(workspace, "tests", "existing.test.ts"), "import { it } from \"vitest\";\n");
@@ -47,10 +47,11 @@ describe("generateEdgeCaseTests", () => {
     const files = await generateEdgeCaseTests(workspace, result);
     const testFile = await readFile(files.testPath, "utf8");
 
-    expect(files.testCount).toBe(2);
+    expect(files.testCount).toBe(3);
     expect(files.testPath).toBe(path.join(workspace, "tests", "edge-cases.test.ts"));
-    expect(testFile).toContain("it.todo(\"Unknown email address\")");
-    expect(testFile).toContain("it.todo(\"Expired reset token\")");
+    expect(testFile).toContain("it.todo(\"Unknown email does not disclose account status\")");
+    expect(testFile).toContain("it.todo(\"Edge case: Unknown email address\")");
+    expect(testFile).toContain("it.todo(\"Edge case: Expired reset token\")");
     expect(testFile).not.toContain("//");
   });
 
@@ -96,7 +97,7 @@ describe("generateEdgeCaseTests", () => {
 
     expect(files.testPath).toBe(path.join(workspace, "tests", "test_edge_cases.py"));
     expect(testFile).toContain("import pytest");
-    expect(testFile).toContain("def test_invalid_token():");
+    expect(testFile).toContain("def test_invalid_token_is_rejected():");
     expect(testFile).not.toContain("#");
   });
 });

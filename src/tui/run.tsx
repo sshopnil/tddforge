@@ -1,5 +1,5 @@
 import React from "react";
-import { render } from "ink";
+import { render } from "@orchetron/storm";
 import { TddforgeApp } from "./ui.js";
 
 export function runTui(initialWorkspaceRoot: string): void {
@@ -9,5 +9,9 @@ export function runTui(initialWorkspaceRoot: string): void {
     return;
   }
 
-  render(<TddforgeApp initialWorkspaceRoot={initialWorkspaceRoot} />);
+  void render(<TddforgeApp initialWorkspaceRoot={initialWorkspaceRoot} />)
+    .waitUntilExit()
+    .then(() => {
+      process.exit(0);
+    });
 }

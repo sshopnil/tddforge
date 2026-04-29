@@ -108,4 +108,29 @@ describe("story planner", () => {
     expect(prompt.prompt).not.toContain("dev-49");
     expect(prompt.prompt).not.toContain("tests/39.test.ts");
   });
+
+  it("instructs small models to generate concrete test scenarios from requirements and edge cases", () => {
+    const prompt = buildPlanningPrompt(
+      "As an admin, I want to retry due tasks so that missed work can be rescheduled.",
+      {
+        workspaceRoot: "/repo",
+        packageManager: "npm",
+        testFramework: "vitest",
+        projectType: "node",
+        language: "typescript",
+        moduleSystem: "esm",
+        packageName: "fixture",
+        scripts: ["test"],
+        dependencies: [],
+        devDependencies: ["vitest"],
+        testDirectories: ["tests"],
+        checkedInTestFiles: []
+      },
+    );
+
+    expect(prompt.system).toContain("For every explicit requirement");
+    expect(prompt.system).toContain("For every edge case");
+    expect(prompt.system).toContain("concrete Given/When/Then");
+    expect(prompt.system).toContain("For small local models");
+  });
 });
