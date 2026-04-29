@@ -18,12 +18,76 @@ It has two modes:
 
 ## Install
 
-### Run from this repository
+TDDForge is packaged as an npm CLI named `tddforge`. The package is not published to the public npm registry yet, so `npm install -g tddforge` does not work at the moment.
+
+Until the first npm release is published, install it globally from the GitHub repository or link it from a local clone.
+
+### Linux and macOS
+
+Install globally from GitHub:
+
+```bash
+npm install -g github:sshopnil/tddforge
+tddforge --help
+```
+
+Or install from a local clone:
+
+```bash
+git clone https://github.com/sshopnil/tddforge.git
+cd tddforge
+npm install
+npm run build
+npm link
+tddforge --help
+```
+
+If global npm installs require administrator access on your machine, configure an npm user prefix instead of using `sudo`:
+
+```bash
+npm config set prefix ~/.npm-global
+```
+
+Then add `~/.npm-global/bin` to your shell `PATH`.
+
+### Windows
+
+Install globally from GitHub in PowerShell:
+
+```powershell
+npm install -g github:sshopnil/tddforge
+tddforge --help
+```
+
+Or install from a local clone:
+
+```powershell
+git clone https://github.com/sshopnil/tddforge.git
+cd tddforge
+npm install
+npm run build
+npm link
+tddforge --help
+```
+
+If `tddforge` is not found after installation, make sure the npm global binary directory is on your `PATH`:
+
+```powershell
+npm prefix -g
+```
+
+The executable is usually under the `bin` directory inside that global prefix.
+
+### Run Without Global Install
+
+From a local clone:
 
 ```bash
 npm install
 npm run build
 node dist/index.js --help
+node dist/index.js doctor
+node dist/index.js plan --story ./docs/sample-story.md
 ```
 
 Start the TUI from the repo:
@@ -32,22 +96,12 @@ Start the TUI from the repo:
 node dist/index.js
 ```
 
-Run a CLI command:
+### Registry Release Reminder
+
+The repository has an npm publish workflow, but the `tddforge` package is not available on npm yet. After publishing, the normal global install command should be:
 
 ```bash
-node dist/index.js doctor
-node dist/index.js plan --story ./docs/sample-story.md
-```
-
-### Install as a local CLI in the current environment
-
-From the repository root:
-
-```bash
-npm install
-npm run build
-npm link
-tddforge --help
+npm install -g tddforge
 ```
 
 ## Quick Start
@@ -347,14 +401,18 @@ TDDForge may create or update:
 
 ### Create a Local Development Environment
 
+Use Node.js `20+` and npm. The repository includes `package-lock.json`, so `npm ci` is the most reproducible install for contributors and CI.
+
 ```bash
-git clone <repo-url>
+git clone https://github.com/sshopnil/tddforge.git
 cd tddforge
-npm install
-npm run build
-npm run typecheck
-npm run lint
-npm test
+npm ci
+```
+
+Create a workspace config for local manual testing:
+
+```bash
+npm run dev -- init
 ```
 
 Run the app in development:
@@ -363,16 +421,51 @@ Run the app in development:
 npm run dev
 ```
 
-Run a direct command in development:
+Run direct CLI commands in development:
 
 ```bash
+npm run dev -- --help
 npm run dev -- doctor
 npm run dev -- plan --story ./docs/sample-story.md
 ```
 
-### Contribution Checks
+Build and test the production entrypoint:
 
-Before contributing, run:
+```bash
+npm run build
+node dist/index.js --help
+node dist/index.js doctor
+```
+
+### Provider Setup for Development
+
+By default, `tddforge init` creates an Ollama config using `http://127.0.0.1:11434` and model `gemma4:e4b`.
+
+For Ollama development:
+
+```bash
+ollama serve
+ollama pull gemma4:e4b
+npm run dev -- doctor
+```
+
+For OpenAI development, edit `.tddforge/config.json` to use `"type": "openai"`, then set:
+
+```bash
+export OPENAI_API_KEY="..."
+export OPENAI_MODEL="gpt-4o-mini"
+```
+
+On Windows PowerShell:
+
+```powershell
+$env:OPENAI_API_KEY="..."
+$env:OPENAI_MODEL="gpt-4o-mini"
+```
+
+### Quality Checks
+
+Before opening a PR or release, run:
 
 ```bash
 npm run typecheck
@@ -380,6 +473,15 @@ npm run lint
 npm test
 npm run build
 ```
+
+Useful scripts:
+
+- `npm run dev`: run the TypeScript CLI entrypoint through `tsx`
+- `npm run build`: build `dist/index.js` and `dist/index.d.ts` with `tsup`
+- `npm run typecheck`: run TypeScript without emitting files
+- `npm run lint`: run ESLint flat config
+- `npm test`: run the Vitest suite once
+- `npm run test:watch`: run Vitest in watch mode
 
 ### Project Structure
 
@@ -402,14 +504,14 @@ project_context.md  Repo-local implementation notes and behavior contract
 
 ### Important Source Files
 
-- [`src/index.ts`](/home/shayan/Desktop/Office/projects/code/tddforge/src/index.ts): CLI entrypoint and subcommand registration
-- [`src/tui/ui.tsx`](/home/shayan/Desktop/Office/projects/code/tddforge/src/tui/ui.tsx): main TUI state machine and interaction flow
-- [`src/tui/commands.ts`](/home/shayan/Desktop/Office/projects/code/tddforge/src/tui/commands.ts): slash command registry and parsing
-- [`src/tui/provider-setup.ts`](/home/shayan/Desktop/Office/projects/code/tddforge/src/tui/provider-setup.ts): provider auth, model discovery, config save helpers
-- [`src/story-engine/planner.ts`](/home/shayan/Desktop/Office/projects/code/tddforge/src/story-engine/planner.ts): story-to-plan workflow
-- [`src/workspace/scan.ts`](/home/shayan/Desktop/Office/projects/code/tddforge/src/workspace/scan.ts): workspace detection for language, framework, and test files
-- [`src/workspace/test-setup.ts`](/home/shayan/Desktop/Office/projects/code/tddforge/src/workspace/test-setup.ts): interactive test environment setup actions
-- [`src/export/generated-tests.ts`](/home/shayan/Desktop/Office/projects/code/tddforge/src/export/generated-tests.ts): generated test scaffold writing
+- [`src/index.ts`](src/index.ts): CLI entrypoint and subcommand registration
+- [`src/tui/ui.tsx`](src/tui/ui.tsx): main TUI state machine and interaction flow
+- [`src/tui/commands.ts`](src/tui/commands.ts): slash command registry and parsing
+- [`src/tui/provider-setup.ts`](src/tui/provider-setup.ts): provider auth, model discovery, config save helpers
+- [`src/story-engine/planner.ts`](src/story-engine/planner.ts): story-to-plan workflow
+- [`src/workspace/scan.ts`](src/workspace/scan.ts): workspace detection for language, framework, and test files
+- [`src/workspace/test-setup.ts`](src/workspace/test-setup.ts): interactive test environment setup actions
+- [`src/export/generated-tests.ts`](src/export/generated-tests.ts): generated test scaffold writing
 
 ## Notes
 
