@@ -27,7 +27,7 @@ export function scanWorkspace(workspaceRoot: string): WorkspaceScanResult {
     workspaceRoot,
     packageManager: detectPackageManager(workspaceRoot),
     testFramework: detectTestFramework(workspaceRoot, allDependencies, checkedInTestFiles),
-    projectType: packageJson ? "node" : "unknown",
+    projectType: detectProjectType(workspaceRoot, Boolean(packageJson)),
     language: detectLanguage(workspaceRoot),
     moduleSystem: detectModuleSystem(workspaceRoot, packageJson),
     packageName: packageJson?.name,
@@ -63,6 +63,9 @@ function detectTestFramework(
   const jestConfigExists = ["ts", "js", "mts", "mjs", "cts", "cjs"].some((ext) =>
     existsSync(path.join(workspaceRoot, `jest.config.${ext}`)),
   );
+  const pytestConfigExists = ["pytest.ini", "tox.ini", "setup.cfg", "pyproject.toml"].some((file) =>
+    existsSync(path.join(workspaceRoot, file)) && readFileSync(path.join(workspaceRoot, file), "utf8").includes("pytest"),
+  );
 
   if (vitestConfigExists || allDependencies.includes("vitest")) {
     return "vitest";
@@ -73,6 +76,23 @@ function detectTestFramework(
   if (checkedInTestFiles.some((file) => file.framework === "pytest")) {
     return "pytest";
   }
+  if (pytestConfigExists) {
+    return "pytest";
+  }
+  return "unknown";
+}
+
+function detectProjectType(workspaceRoot: string, hasPackageJson: boolean): WorkspaceScanResult["projectType"] {
+  const hasPython = hasPythonProjectSignal(workspaceRoot);
+  if (hasPackageJson && hasPython) {
+    return "mixed";
+  }
+  if (hasPackageJson) {
+    return "node";
+  }
+  if (hasPython) {
+    return "python";
+  }
   return "unknown";
 }
 
@@ -81,9 +101,13 @@ function detectLanguage(workspaceRoot: string): WorkspaceScanResult["language"] 
   const hasTs = entries.some((entry) => entry.endsWith(".ts") || entry.endsWith(".tsx")) ||
     ["tsconfig.json", "tsconfig.base.json"].some((file) => existsSync(path.join(workspaceRoot, file)));
   const hasJs = entries.some((entry) => entry.endsWith(".js") || entry.endsWith(".jsx"));
+  const hasPython = entries.some((entry) => entry.endsWith(".py")) || hasPythonProjectSignal(workspaceRoot);
 
-  if (hasTs && hasJs) {
+  if ([hasTs || hasJs, hasPython].every(Boolean) || (hasTs && hasJs)) {
     return "mixed";
+  }
+  if (hasPython) {
+    return "python";
   }
   if (hasTs) {
     return "typescript";
@@ -92,6 +116,12 @@ function detectLanguage(workspaceRoot: string): WorkspaceScanResult["language"] 
     return "javascript";
   }
   return "unknown";
+}
+
+function hasPythonProjectSignal(workspaceRoot: string): boolean {
+  return ["pyproject.toml", "requirements.txt", "requirements-dev.txt", "setup.py", "setup.cfg", "pytest.ini"].some((file) =>
+    existsSync(path.join(workspaceRoot, file)),
+  );
 }
 
 function detectModuleSystem(

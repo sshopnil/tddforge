@@ -7,7 +7,7 @@ TDDForge is a TypeScript ESM CLI that helps turn user stories into structured TD
 The main user-facing flows are:
 
 - CLI commands such as `doctor`, `plan --story <file>`, and the default interactive TUI.
-- A repo-aware Ink TUI for selecting sessions, loading story files, building plans, answering ambiguities, monitoring test status, and generating test todo files.
+- A repo-aware Storm TUI for selecting sessions, loading story files, building plans, answering ambiguities, monitoring test status, and generating test todo files.
 - CI/GitHub Actions workflows for normal CI, ISO-style quality checks, and npm publishing.
 
 ## Tech Stack
@@ -15,7 +15,7 @@ The main user-facing flows are:
 - Runtime: Node.js `>=20`
 - Language: TypeScript ESM
 - CLI: `commander`
-- TUI: `ink`, `ink-text-input`, React
+- TUI: `@orchetron/storm`, React
 - Testing: Vitest
 - Build: `tsup`
 - Lint: ESLint flat config
@@ -34,7 +34,7 @@ npm run build
 
 - `src/index.ts`: CLI entrypoint.
 - `src/commands/`: non-interactive CLI commands.
-- `src/tui/`: Ink TUI, command metadata, story discovery, session persistence.
+- `src/tui/`: Storm TUI, command metadata, story discovery, session persistence.
 - `src/story-engine/`: prompt creation, model planning workflow, Zod plan schema.
 - `src/workspace/`: repo scanning, tree context, test framework/file detection, generated-test placement.
 - `src/export/`: plan export and generated test file writing.
@@ -84,18 +84,21 @@ Monitor/test flow:
 - When monitor mode sees a relevant source or test file edit, it runs the repo test command once, captures pass/fail/skipped counts, extracts the specific failure message, and stores an LLM-ready failure context.
 - `/test-failure` prints the latest captured failure context so an LLM repair can use the exact failing message; test file edits should still be saved only after user review and confirmation.
 - Test status is initialized on startup and displayed in the status panel.
-- Busy TUI actions show an animated progress bar instead of the old `Working...` text.
+- Busy TUI actions show a stable progress bar instead of the old `Working...` text; avoid timer-driven React state animation for long Ollama calls.
+- Storm exit cleanup should use `useCleanup`; timers/watchers should be explicitly cleared before replacement because normal `useEffect` cleanup is not reliable in Storm's reconciler.
+- Text input is rendered as a bounded custom single-line row; keyboard editing is handled in the app-level `useInput` handler to avoid Storm `TextInput` row overwrites in small terminals.
 
 Provider/model performance:
 
 - Planning prompts compact workspace scan data, cap dependency/test-file lists, and truncate very large story/tree context before sending it to the model.
-- Ollama generation sends bounded runtime options by default: `num_ctx`, `num_predict`, CPU thread count, and GPU layer offload.
+- Ollama generation uses `/api/chat` with separate system/user messages and `format: "json"` so local responses match OpenAI-style role-separated output.
+- Ollama generation sends bounded runtime options by default: `num_ctx`, `num_predict`, and CPU thread count.
 - Ollama runtime options can be overridden with `TDDFORGE_OLLAMA_NUM_CTX`, `TDDFORGE_OLLAMA_NUM_PREDICT`, `TDDFORGE_OLLAMA_NUM_THREAD`, and `TDDFORGE_OLLAMA_NUM_GPU`.
 
 Copy/export:
 
 - `/copy` writes a clean plain-text snapshot to `.tddforge-out/tui-copy.txt`.
-- Copy output must contain only text content, not Ink borders, colors, or hidden terminal formatting.
+- Copy output must contain only text content, not TUI borders, colors, or hidden terminal formatting.
 
 ## Test Generation Rules
 
@@ -108,8 +111,10 @@ Rules:
 - If existing test files exist, generated files should use the same area/framework style.
 - Fallback directory is `tests`.
 - Generated test files must not include comments.
+- Generated todo cases should come from the plan's `suggestedTestScenarios` first, then add fallback edge-case todos for edge cases not covered by those scenarios.
 - Vitest/Jest output uses `it.todo(...)`.
 - Pytest output uses skipped test functions.
+- When a workspace has no detected test framework, the TUI starts an interactive agent-user setup flow instead of only warning: confirm setup, choose framework, choose/create the test folder, then let TDDForge write config and enable monitor.
 
 ## Workspace Scan
 
@@ -117,11 +122,11 @@ Rules:
 
 - package manager
 - detected test framework: `vitest`, `jest`, `pytest`, or `unknown`
-- language/module system
+- project type and language/module system, including Python-only and mixed workspaces
 - test directories
 - checked-in test files with detected framework
 
-This scan is used by TUI status, monitor behavior, and generated-test placement.
+This scan is used by TUI status, monitor behavior, generated-test placement, and first-run test-environment setup suggestions.
 
 ## LLM JSON Parsing
 

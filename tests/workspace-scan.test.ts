@@ -72,4 +72,18 @@ describe("workspace scan", () => {
       { path: path.join("tests", "test_api.py"), framework: "pytest" }
     ]);
   });
+
+  it("detects Python projects before tests are configured", async () => {
+    const workspace = await mkdtemp(path.join(os.tmpdir(), "tddforge-python-workspace-"));
+
+    await writeFile(path.join(workspace, "pyproject.toml"), "[project]\nname = \"fixture-python\"\n");
+    await mkdir(path.join(workspace, "app"));
+    await writeFile(path.join(workspace, "app", "service.py"), "def value():\n    return 1\n");
+
+    const result = scanWorkspace(workspace);
+
+    expect(result.projectType).toBe("python");
+    expect(result.language).toBe("python");
+    expect(result.testFramework).toBe("unknown");
+  });
 });

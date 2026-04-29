@@ -20,7 +20,7 @@ export const localConfigSchema = z.object({
     model: "gemma4:e4b",
     host: "http://127.0.0.1:11434"
   }),
-  testFramework: z.enum(["auto", "vitest", "jest"]).default("auto")
+  testFramework: z.enum(["auto", "vitest", "jest", "pytest"]).default("auto")
 });
 
 export type LocalConfig = z.infer<typeof localConfigSchema>;

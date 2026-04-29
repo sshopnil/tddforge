@@ -1,8 +1,7 @@
-import { Box, Text, useApp, useInput, useStdout } from "ink";
-import TextInput from "ink-text-input";
+import { Box, Text, ProgressBar, useApp, useCleanup, useInput, useTerminal } from "@orchetron/storm";
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import path from "node:path";
-import { access, mkdir, readFile, stat, writeFile } from "node:fs/promises";
+import { access, mkdir, stat, writeFile } from "node:fs/promises";
 import { constants, existsSync, statSync, watch, type FSWatcher } from "node:fs";
 import { execa } from "execa";
 import { generateEdgeCaseTests, type GeneratedTestFiles } from "../export/generated-tests.js";
@@ -14,6 +13,11 @@ import { buildPlanFromStoryFile, buildPlanFromStoryText, type PlanWorkflowResult
 import { getWorkspaceTreeContext } from "../workspace/context.js";
 import { scanWorkspace } from "../workspace/scan.js";
 import type { WorkspaceScanResult } from "../workspace/types.js";
+import {
+  getTestEnvironmentSetupSuggestions,
+  setupTestEnvironment,
+  type TestEnvironmentSetupSuggestion
+} from "../workspace/test-setup.js";
 import { getSlashCommandSuggestions, HELP_TEXT, parseSlashCommand, type SlashCommandDefinition } from "./commands.js";
 import {
   buildProviderConfig,
@@ -35,6 +39,7 @@ import { buildTestRunReport, formatTestRunSummary, type TestRunReport } from "./
 type LogTone = "info" | "success" | "error" | "muted";
 type TuiTab = "status" | "monitor" | "session";
 type ProviderSetupMode = "provider" | "model" | null;
+type TestSetupMode = "confirm" | "framework" | "target" | null;
 
 const TUI_TABS: TuiTab[] = ["status", "monitor", "session"];
 const PROVIDER_CHOICES: ProviderType[] = ["ollama", "openai"];
@@ -78,8 +83,7 @@ interface PanelLine {
 
 export function TddforgeApp({ initialWorkspaceRoot }: AppProps): React.JSX.Element {
   const { exit } = useApp();
-  const { stdout } = useStdout();
-  const [terminalSize, setTerminalSize] = useState(() => getTerminalSize(stdout));
+  const terminal = useTerminal();
   const [input, setInput] = useState("");
   const [inputHistory, setInputHistory] = useState<string[]>([]);
   const [historyIndex, setHistoryIndex] = useState<number | null>(null);
@@ -97,7 +101,9 @@ export function TddforgeApp({ initialWorkspaceRoot }: AppProps): React.JSX.Eleme
   const [pendingQuestions, setPendingQuestions] = useState<string[]>([]);
   const [questionIndex, setQuestionIndex] = useState(0);
   const [answeringQuestion, setAnsweringQuestion] = useState(false);
-  const [awaitingTestSetupChoice, setAwaitingTestSetupChoice] = useState(false);
+  const [testSetupMode, setTestSetupMode] = useState<TestSetupMode>(null);
+  const [testSetupSuggestions, setTestSetupSuggestions] = useState<TestEnvironmentSetupSuggestion[]>([]);
+  const [selectedTestSetupFramework, setSelectedTestSetupFramework] = useState<TestEnvironmentSetupSuggestion["framework"] | null>(null);
   const [selectedTestSetupIndex, setSelectedTestSetupIndex] = useState(0);
   const [latestPlan, setLatestPlan] = useState<PlanWorkflowResult | null>(null);
   const [latestWorkspaceScan, setLatestWorkspaceScan] = useState<WorkspaceScanResult | null>(null);
@@ -117,6 +123,9 @@ export function TddforgeApp({ initialWorkspaceRoot }: AppProps): React.JSX.Eleme
   const [latestTestRun, setLatestTestRun] = useState<TestRunReport | null>(null);
   const [busy, setBusy] = useState(false);
   const testRunInFlight = useRef(false);
+  const sessionSaveTimerRef = useRef<NodeJS.Timeout | null>(null);
+  const monitorTimerRef = useRef<NodeJS.Timeout | null>(null);
+  const watcherCleanupRef = useRef<(() => void) | null>(null);
   const [configRevision, setConfigRevision] = useState(0);
   const [providerSetupMode, setProviderSetupMode] = useState<ProviderSetupMode>(null);
   const [selectedProviderIndex, setSelectedProviderIndex] = useState(0);
@@ -135,13 +144,13 @@ export function TddforgeApp({ initialWorkspaceRoot }: AppProps): React.JSX.Eleme
     monitor: true,
     session: true
   });
-  const [busyFrame, setBusyFrame] = useState(0);
   const [logEntries, setLogEntries] = useState<LogEntry[]>(() => [
     { id: 1, tone: "success", text: "Welcome to TDDForge TUI. Type /help to see commands." }
   ]);
 
   const activeConfig = useMemo<ResolvedConfig>(() => loadResolvedConfig(workspaceRoot), [workspaceRoot, configRevision]);
   const commandSuggestions = useMemo(() => getSlashCommandSuggestions(input), [input]);
+  const awaitingTestSetupChoice = testSetupMode !== null;
   const commandSuggestionsVisible = commandSuggestions.length > 0 &&
     !awaitingStoryChoice &&
     !awaitingTestSetupChoice &&
@@ -152,9 +161,30 @@ export function TddforgeApp({ initialWorkspaceRoot }: AppProps): React.JSX.Eleme
     () => buildMonitorSuggestions(latestWorkspaceScan, latestPlan, latestGeneratedTests),
     [latestWorkspaceScan, latestPlan, latestGeneratedTests],
   );
-  const selectionVisibleCount = Math.max(1, Math.min(8, terminalSize.rows - 18));
-  const panelVisibleCount = Math.max(1, terminalSize.rows - 14);
-  const panelContentWidth = Math.max(10, terminalSize.columns - 6);
+  const testSetupFrameworkOptions = useMemo(
+    () => getTestSetupFrameworkOptions(testSetupSuggestions),
+    [testSetupSuggestions],
+  );
+  const testSetupTargetOptions = useMemo(
+    () => getTestSetupTargetOptions(testSetupSuggestions, selectedTestSetupFramework),
+    [testSetupSuggestions, selectedTestSetupFramework],
+  );
+  const terminalColumns = Math.max(40, terminal.width ?? 80);
+  const terminalRows = Math.max(12, terminal.height ?? 24);
+  const headerHeight = 1;
+  const tabHeight = awaitingSessionChoice ? 0 : 1;
+  const footerHeight = terminalRows < 16 ? 0 : 1;
+  const inputHasTray = awaitingSessionChoice ||
+    awaitingStoryChoice ||
+    awaitingTestSetupChoice ||
+    Boolean(providerSetupMode) ||
+    (pendingQuestions.length > 0 && !answeringQuestion) ||
+    commandSuggestionsVisible;
+  const inputHeight = getInputBandHeight(terminalRows, tabHeight, footerHeight, inputHasTray);
+  const contentHeight = Math.max(3, terminalRows - headerHeight - tabHeight - inputHeight - footerHeight);
+  const selectionVisibleCount = Math.max(1, Math.min(8, inputHeight - 7));
+  const panelVisibleCount = Math.max(1, contentHeight - 4);
+  const panelContentWidth = Math.max(10, terminalColumns - 6);
   const statusLines = useMemo(
     () => buildStatusLines({
       workspaceRoot,
@@ -200,28 +230,31 @@ export function TddforgeApp({ initialWorkspaceRoot }: AppProps): React.JSX.Eleme
     session: countWrappedPanelLines(sessionLines, panelContentWidth)
   }), [statusLines, monitorLines, sessionLines, panelContentWidth]);
 
-  useEffect(() => {
-    const handleResize = (): void => {
-      setTerminalSize(getTerminalSize(stdout));
-    };
-
-    handleResize();
-    stdout.on("resize", handleResize);
-    return () => {
-      stdout.off("resize", handleResize);
-    };
-  }, [stdout]);
+  useCleanup(() => {
+    if (sessionSaveTimerRef.current) {
+      clearTimeout(sessionSaveTimerRef.current);
+    }
+    if (monitorTimerRef.current) {
+      clearInterval(monitorTimerRef.current);
+    }
+    watcherCleanupRef.current?.();
+  });
 
   useEffect(() => {
     void prepareSessionSelection();
   }, [workspaceRoot]);
 
   useEffect(() => {
-    if (!sessionReady || !sessionId) {
-      return undefined;
+    if (sessionSaveTimerRef.current) {
+      clearTimeout(sessionSaveTimerRef.current);
+      sessionSaveTimerRef.current = null;
     }
 
-    const timer = setTimeout(() => {
+    if (!sessionReady || !sessionId) {
+      return;
+    }
+
+    sessionSaveTimerRef.current = setTimeout(() => {
       void writeTuiSession(workspaceRoot, {
         id: sessionId,
         updatedAt: new Date().toISOString(),
@@ -232,9 +265,8 @@ export function TddforgeApp({ initialWorkspaceRoot }: AppProps): React.JSX.Eleme
         folderTreeContext,
         logEntries
       });
+      sessionSaveTimerRef.current = null;
     }, 300);
-
-    return () => clearTimeout(timer);
   }, [
     sessionReady,
     sessionId,
@@ -252,19 +284,6 @@ export function TddforgeApp({ initialWorkspaceRoot }: AppProps): React.JSX.Eleme
       commandSuggestions.length === 0 ? 0 : Math.min(index, commandSuggestions.length - 1),
     );
   }, [commandSuggestions.length]);
-
-  useEffect(() => {
-    if (!busy) {
-      setBusyFrame(0);
-      return undefined;
-    }
-
-    const timer = setInterval(() => {
-      setBusyFrame((frame) => frame + 1);
-    }, 120);
-
-    return () => clearInterval(timer);
-  }, [busy]);
 
   useEffect(() => {
     setPanelScroll((scroll) => {
@@ -291,8 +310,13 @@ export function TddforgeApp({ initialWorkspaceRoot }: AppProps): React.JSX.Eleme
   }, [panelLineCounts, panelFollowEnd, panelVisibleCount]);
 
   useEffect(() => {
+    if (monitorTimerRef.current) {
+      clearInterval(monitorTimerRef.current);
+      monitorTimerRef.current = null;
+    }
+
     if (!monitorEnabled) {
-      return undefined;
+      return;
     }
 
     try {
@@ -302,7 +326,7 @@ export function TddforgeApp({ initialWorkspaceRoot }: AppProps): React.JSX.Eleme
       appendLog("error", `Monitor failed: ${message}`);
     }
 
-    const timer = setInterval(() => {
+    monitorTimerRef.current = setInterval(() => {
       try {
         setLatestWorkspaceScan(scanWorkspace(workspaceRoot));
         void refreshAfterCommitChange("commit poll");
@@ -311,8 +335,6 @@ export function TddforgeApp({ initialWorkspaceRoot }: AppProps): React.JSX.Eleme
         appendLog("error", `Monitor failed: ${message}`);
       }
     }, 5000);
-
-    return () => clearInterval(timer);
   }, [monitorEnabled, workspaceRoot]);
 
   useEffect(() => {
@@ -320,6 +342,7 @@ export function TddforgeApp({ initialWorkspaceRoot }: AppProps): React.JSX.Eleme
     try {
       const scan = scanWorkspace(workspaceRoot);
       setLatestWorkspaceScan(scan);
+      promptForTestSetupIfNeeded(scan, "Startup scan");
     } catch (error) {
       const message = error instanceof Error ? error.message : "Unknown workspace scan error";
       appendLog("error", `Startup scan failed: ${message}`);
@@ -327,8 +350,11 @@ export function TddforgeApp({ initialWorkspaceRoot }: AppProps): React.JSX.Eleme
   }, [workspaceRoot]);
 
   useEffect(() => {
+    watcherCleanupRef.current?.();
+    watcherCleanupRef.current = null;
+
     if (!monitorEnabled) {
-      return undefined;
+      return;
     }
 
     const watchers: FSWatcher[] = [];
@@ -357,97 +383,100 @@ export function TddforgeApp({ initialWorkspaceRoot }: AppProps): React.JSX.Eleme
       }
     }
 
-    return () => {
+    watcherCleanupRef.current = () => {
       if (timer) {
         clearTimeout(timer);
+        timer = undefined;
       }
       for (const watcher of watchers) {
         watcher.close();
       }
+      watcherCleanupRef.current = null;
     };
   }, [monitorEnabled, workspaceRoot, latestWorkspaceScan?.testDirectories.join("|")]);
 
-  useInput((_input, key) => {
-    if (key.ctrl && _input === "c") {
+  useInput((event) => {
+    if (event.ctrl && (event.key === "c" || event.char === "c")) {
       exit();
     }
     if (awaitingSessionChoice) {
-      if (key.upArrow) {
+      if (event.key === "up") {
         setSelectedSessionIndex((index) => Math.max(index - 1, 0));
       }
-      if (key.downArrow) {
+      if (event.key === "down") {
         setSelectedSessionIndex((index) => Math.min(index + 1, sessionChoices.length));
       }
-      if (key.return) {
+      if (event.key === "return") {
         void chooseSelectedSession();
       }
       return;
     }
     if (awaitingStoryChoice) {
-      if (key.upArrow) {
+      if (event.key === "up") {
         setSelectedStoryIndex((index) => Math.max(index - 1, 0));
       }
-      if (key.downArrow) {
+      if (event.key === "down") {
         setSelectedStoryIndex((index) => Math.min(index + 1, storyChoices.length - 1));
       }
-      if (key.return) {
+      if (event.key === "return") {
         void chooseSelectedStory();
       }
       return;
     }
     if (awaitingTestSetupChoice) {
-      if (key.upArrow) {
+      if (event.key === "up") {
         setSelectedTestSetupIndex((index) => Math.max(index - 1, 0));
       }
-      if (key.downArrow) {
-        setSelectedTestSetupIndex((index) => Math.min(index + 1, 1));
+      if (event.key === "down") {
+        setSelectedTestSetupIndex((index) => Math.min(index + 1, getTestSetupOptionCount(testSetupMode, testSetupFrameworkOptions, testSetupTargetOptions) - 1));
       }
-      if (key.return) {
+      if (event.key === "return") {
         void chooseTestSetupOption();
       }
       return;
     }
     if (providerSetupMode === "provider") {
-      if (key.upArrow) {
+      if (event.key === "up") {
         setSelectedProviderIndex((index) => Math.max(index - 1, 0));
       }
-      if (key.downArrow) {
+      if (event.key === "down") {
         setSelectedProviderIndex((index) => Math.min(index + 1, PROVIDER_CHOICES.length - 1));
       }
-      if (key.return) {
+      if (event.key === "return") {
         void chooseProviderSetupOption();
       }
       return;
     }
     if (providerSetupMode === "model") {
-      if (key.upArrow) {
+      if (event.key === "up") {
         setSelectedProviderModelIndex((index) => Math.max(index - 1, 0));
       }
-      if (key.downArrow) {
+      if (event.key === "down") {
         setSelectedProviderModelIndex((index) => Math.min(index + 1, providerModelChoices.length - 1));
       }
-      if (key.return) {
+      if (event.key === "return") {
         void chooseProviderModelOption();
       }
       return;
     }
     if (pendingQuestions.length > 0 && !answeringQuestion) {
-      if (key.upArrow) {
+      if (event.key === "up") {
         setQuestionIndex((index) => Math.max(index - 1, 0));
       }
-      if (key.downArrow) {
+      if (event.key === "down") {
         setQuestionIndex((index) => Math.min(index + 1, pendingQuestions.length - 1));
       }
-      if (key.return) {
+      if (event.key === "return") {
         setAnsweringQuestion(true);
         setInput("");
       }
       return;
     }
-    if (key.tab) {
-      setActiveTab((current) => nextTab(current, key.shift));
+    if (event.key === "tab") {
+      setActiveTab((current) => nextTab(current, event.shift));
+      return;
     }
-    if (key.upArrow) {
+    if (event.key === "up") {
       if (commandSuggestionsVisible) {
         setSelectedCommandSuggestionIndex((index) => Math.max(index - 1, 0));
       } else if (input) {
@@ -455,8 +484,9 @@ export function TddforgeApp({ initialWorkspaceRoot }: AppProps): React.JSX.Eleme
       } else {
         scrollActivePanel("up");
       }
+      return;
     }
-    if (key.downArrow) {
+    if (event.key === "down") {
       if (commandSuggestionsVisible) {
         setSelectedCommandSuggestionIndex((index) => Math.min(index + 1, commandSuggestions.length - 1));
       } else if (input) {
@@ -464,6 +494,29 @@ export function TddforgeApp({ initialWorkspaceRoot }: AppProps): React.JSX.Eleme
       } else {
         scrollActivePanel("down");
       }
+      return;
+    }
+    if (event.key === "return") {
+      void submitCurrentInput();
+      return;
+    }
+    if (event.key === "backspace" || event.key === "delete") {
+      setInput((value) => value.slice(0, -1));
+      setHistoryIndex(null);
+      setSelectedCommandSuggestionIndex(0);
+      return;
+    }
+    if (event.key === "escape") {
+      setInput("");
+      setHistoryIndex(null);
+      setSelectedCommandSuggestionIndex(0);
+      return;
+    }
+    const printableInput = getPrintableInput(event.char, event.key);
+    if (printableInput) {
+      setInput((value) => value + printableInput);
+      setHistoryIndex(null);
+      setSelectedCommandSuggestionIndex(0);
     }
   });
 
@@ -532,7 +585,9 @@ export function TddforgeApp({ initialWorkspaceRoot }: AppProps): React.JSX.Eleme
           setPendingQuestions([]);
           setQuestionIndex(0);
           setAnsweringQuestion(false);
-          setAwaitingTestSetupChoice(false);
+          setTestSetupMode(null);
+          setTestSetupSuggestions([]);
+          setSelectedTestSetupFramework(null);
           setSelectedTestSetupIndex(0);
           setProviderSetupMode(null);
           setPendingProviderType(null);
@@ -562,6 +617,7 @@ export function TddforgeApp({ initialWorkspaceRoot }: AppProps): React.JSX.Eleme
             "success",
             `Workspace scan: packageManager=${scan.packageManager}, testFramework=${scan.testFramework}, language=${scan.language}, moduleSystem=${scan.moduleSystem}`,
           );
+          promptForTestSetupIfNeeded(scan, "Workspace scan");
         });
         return;
       case "context":
@@ -774,10 +830,7 @@ export function TddforgeApp({ initialWorkspaceRoot }: AppProps): React.JSX.Eleme
     const scan = scanWorkspace(workspaceRoot);
     setLatestWorkspaceScan(scan);
     if (!isTestingEnvironmentReady(scan)) {
-      setAwaitingTestSetupChoice(true);
-      setSelectedTestSetupIndex(0);
-      setActiveTab("monitor");
-      appendLog("info", "No testing environment detected. Choose setup to let TDDForge install Vitest and create a test script, or skip.");
+      promptForTestSetupIfNeeded(scan, "Monitor");
       return;
     }
 
@@ -876,6 +929,25 @@ export function TddforgeApp({ initialWorkspaceRoot }: AppProps): React.JSX.Eleme
     await saveSelectedProviderModel(pendingProviderType, modelName, activeConfig.provider);
   }
 
+  function promptForTestSetupIfNeeded(scan: WorkspaceScanResult, source: string): void {
+    if (scan.testFramework !== "unknown" || testSetupMode) {
+      return;
+    }
+
+    const suggestions = getTestEnvironmentSetupSuggestions(scan);
+    if (suggestions.length === 0) {
+      return;
+    }
+
+    setTestSetupSuggestions(suggestions);
+    setSelectedTestSetupFramework(null);
+    setSelectedTestSetupIndex(0);
+    setTestSetupMode("confirm");
+    setActiveTab("monitor");
+    appendLog("info", `${source}: no test framework detected. TDDForge can guide an interactive setup for this workspace.`);
+    appendLog("muted", `Agent note: ${suggestions[0].reason}`);
+  }
+
   async function saveSelectedProviderModel(type: ProviderType, modelName: string, baseProvider: ProviderConfig): Promise<void> {
     await runBusyAction(async () => {
       const provider = buildProviderConfig(type, modelName, {
@@ -895,21 +967,57 @@ export function TddforgeApp({ initialWorkspaceRoot }: AppProps): React.JSX.Eleme
   }
 
   async function chooseTestSetupOption(): Promise<void> {
-    if (selectedTestSetupIndex === 1) {
-      setAwaitingTestSetupChoice(false);
+    if (testSetupMode === "confirm") {
+      if (selectedTestSetupIndex === 0) {
+        setTestSetupMode("framework");
+        setSelectedTestSetupIndex(0);
+        appendLog("info", "Choose the test framework TDDForge should configure for this project.");
+        return;
+      }
+
+      setTestSetupMode(null);
+      setTestSetupSuggestions([]);
+      setSelectedTestSetupFramework(null);
       appendLog("muted", "Testing environment setup skipped. Monitor remains off.");
       return;
     }
 
-    setAwaitingTestSetupChoice(false);
+    if (testSetupMode === "framework") {
+      const framework = testSetupFrameworkOptions[selectedTestSetupIndex];
+      if (!framework) {
+        setTestSetupMode(null);
+        setTestSetupSuggestions([]);
+        setSelectedTestSetupFramework(null);
+        appendLog("muted", "Testing environment setup skipped. Monitor remains off.");
+        return;
+      }
+
+      setSelectedTestSetupFramework(framework);
+      setSelectedTestSetupIndex(0);
+      setTestSetupMode("target");
+      appendLog("info", `Framework selected: ${formatTestSetupFramework(framework)}. Choose where TDDForge should create or reuse the test folder.`);
+      return;
+    }
+
+    const suggestion = testSetupTargetOptions[selectedTestSetupIndex];
+    if (!suggestion) {
+      setTestSetupMode("framework");
+      setSelectedTestSetupIndex(0);
+      appendLog("muted", "Returning to framework selection.");
+      return;
+    }
+
+    setTestSetupMode(null);
     await runBusyAction(async () => {
-      await setupNodeTestEnvironment(workspaceRoot, latestWorkspaceScan ?? scanWorkspace(workspaceRoot));
+      await setupTestEnvironment(workspaceRoot, suggestion);
       const scan = scanWorkspace(workspaceRoot);
       setLatestWorkspaceScan(scan);
+      setTestSetupSuggestions([]);
+      setSelectedTestSetupFramework(null);
       setMonitorEnabled(true);
       setActiveTab("monitor");
       setBackgroundTestRun("ready - tests run after file edits");
-      appendLog("success", "Testing environment set up. Monitor enabled.");
+      appendLog("success", `${suggestion.label.replace(/^Recommended: /, "")} complete. Monitor enabled.`);
       appendLog("info", "Agent rule: run tests after file changes, capture exact failures before code changes, and save test edits only after user review and confirmation.");
       await refreshAfterCommitChange("test environment setup", true);
     });
@@ -1122,30 +1230,28 @@ export function TddforgeApp({ initialWorkspaceRoot }: AppProps): React.JSX.Eleme
   }
 
   return (
-    <Box flexDirection="column" width={terminalSize.columns} height={terminalSize.rows} paddingX={1} paddingY={0}>
-      <Box marginBottom={1} flexDirection="column" flexShrink={0}>
-        <Text color="cyan">TDDForge</Text>
+    <Box flexDirection="column" width={terminalColumns} height={terminalRows} overflow="hidden">
+      <Box height={headerHeight} paddingX={1} flexDirection="row" justifyContent="space-between" overflow="hidden">
+        <Text color="cyan" bold>TDDForge</Text>
+        {terminalColumns >= 64 ? (
+          <Text color="gray" wrap="truncate">{activeConfig.provider.type} / {activeConfig.provider.model}</Text>
+        ) : null}
       </Box>
 
       {!awaitingSessionChoice ? (
-      <Box marginBottom={1} flexShrink={0}>
-        {TUI_TABS.map((tab) => (
-          <Text key={tab} color={activeTab === tab ? "cyan" : "gray"}>
-            {activeTab === tab ? `[${tab}] ` : `${tab} `}
-          </Text>
-        ))}
-        <Text color="gray">Tab switches panels</Text>
+      <Box height={tabHeight} paddingX={1} flexDirection="row" justifyContent="space-between" overflow="hidden">
+        <Text color="cyan" wrap="truncate">{renderTabLabel(activeTab)}</Text>
+        {terminalColumns >= 64 ? <Text color="gray" wrap="truncate">Tab switches panels</Text> : null}
       </Box>
       ) : null}
 
-      <Box flexDirection="column" flexGrow={1} overflow="hidden">
+      <Box height={contentHeight} flexDirection="column" overflow="hidden">
       {awaitingSessionChoice ? (
-        <Box borderStyle="round" borderColor="cyan" paddingX={1} flexDirection="column" flexGrow={1} overflow="hidden">
+        <Box borderStyle="round" borderColor="cyan" paddingX={1} flexDirection="column" height={contentHeight} overflow="hidden">
           <Text color="yellow">Session</Text>
           <Text color="gray">Select a saved session or start fresh below.</Text>
         </Box>
-      ) : null}
-      {activeTab === "status" ? (
+      ) : activeTab === "status" ? (
         <ScrollablePanel
           title="Status"
           borderColor="magenta"
@@ -1154,9 +1260,7 @@ export function TddforgeApp({ initialWorkspaceRoot }: AppProps): React.JSX.Eleme
           visibleCount={panelVisibleCount}
           width={panelContentWidth}
         />
-      ) : null}
-
-      {activeTab === "monitor" ? (
+      ) : activeTab === "monitor" ? (
         <ScrollablePanel
           title="Monitor"
           borderColor="green"
@@ -1165,9 +1269,7 @@ export function TddforgeApp({ initialWorkspaceRoot }: AppProps): React.JSX.Eleme
           visibleCount={panelVisibleCount}
           width={panelContentWidth}
         />
-      ) : null}
-
-      {activeTab === "session" ? (
+      ) : (
         <ScrollablePanel
           title="Session"
           borderColor="cyan"
@@ -1176,11 +1278,11 @@ export function TddforgeApp({ initialWorkspaceRoot }: AppProps): React.JSX.Eleme
           visibleCount={panelVisibleCount}
           width={panelContentWidth}
         />
-      ) : null}
+      )}
 
       </Box>
 
-      <Box marginTop={1} flexDirection="column" flexShrink={0}>
+      <Box height={inputHeight} paddingX={1} flexDirection="column" overflow="hidden">
         <Text color="green">Input</Text>
         {awaitingSessionChoice ? (
           <SelectionTray
@@ -1203,14 +1305,11 @@ export function TddforgeApp({ initialWorkspaceRoot }: AppProps): React.JSX.Eleme
           />
         ) : awaitingTestSetupChoice ? (
           <SelectionTray
-            title="Testing Setup Required"
-            items={[
-              "Install Vitest, add a test script, and create tests/",
-              "Skip setup"
-            ]}
+            title={getTestSetupTrayTitle(testSetupMode, selectedTestSetupFramework)}
+            items={getTestSetupTrayItems(testSetupMode, testSetupFrameworkOptions, testSetupTargetOptions)}
             selectedIndex={selectedTestSetupIndex}
             visibleCount={selectionVisibleCount}
-            helpText="Use Up/Down to choose, Enter to continue."
+            helpText={getTestSetupTrayHelpText(testSetupMode)}
           />
         ) : providerSetupMode === "provider" ? (
           <SelectionTray
@@ -1237,20 +1336,13 @@ export function TddforgeApp({ initialWorkspaceRoot }: AppProps): React.JSX.Eleme
             helpText="Use Up/Down to choose a question, then press Enter to answer."
           />
         ) : (
-          <TextInput
+          <InputLine
             value={input}
-            onChange={(value) => {
-              setInput(value);
-              setHistoryIndex(null);
-              setSelectedCommandSuggestionIndex(0);
-            }}
-            onSubmit={() => {
-              void submitCurrentInput();
-            }}
             placeholder={getInputPlaceholder(answeringQuestion, awaitingOpenAiApiKey)}
+            width={panelContentWidth}
           />
         )}
-        <Text color="gray">Provider: {activeConfig.provider.type} / {activeConfig.provider.model}</Text>
+        <Text color="gray" wrap="truncate">Provider: {activeConfig.provider.type} / {activeConfig.provider.model}</Text>
         {commandSuggestionsVisible ? (
           <CommandSuggestionTray
             commands={commandSuggestions}
@@ -1258,14 +1350,16 @@ export function TddforgeApp({ initialWorkspaceRoot }: AppProps): React.JSX.Eleme
             visibleCount={selectionVisibleCount}
           />
         ) : null}
-        {busy ? <BusyProgress frame={busyFrame} width={panelContentWidth} /> : <Text color="gray">Ready</Text>}
+        {busy ? <BusyProgress width={panelContentWidth} /> : <Text color="gray">Ready</Text>}
       </Box>
 
-      <Box marginTop={1} flexDirection="column" flexShrink={0}>
-        <Text color="gray">
+      {footerHeight > 0 ? (
+      <Box height={footerHeight} paddingX={1} flexDirection="column" overflow="hidden">
+        <Text color="gray" wrap="truncate">
           Shortcuts: Tab panels Up/Down scroll empty panel /copy /help /doctor /scan /context /story /plan /generate-tests /monitor /test-failure /provider /save-plan /use /exit
         </Text>
       </Box>
+      ) : null}
     </Box>
   );
 }
@@ -1274,6 +1368,22 @@ function nextTab(current: TuiTab, reverse = false): TuiTab {
   const currentIndex = TUI_TABS.indexOf(current);
   const offset = reverse ? -1 : 1;
   return TUI_TABS[(currentIndex + offset + TUI_TABS.length) % TUI_TABS.length];
+}
+
+function renderTabLabel(activeTab: TuiTab): string {
+  return TUI_TABS
+    .map((tab) => activeTab === tab ? `[${tab}]` : tab)
+    .join("  ");
+}
+
+function getInputBandHeight(terminalRows: number, tabHeight: number, footerHeight: number, hasTray: boolean): number {
+  const fixedRows = 1 + tabHeight + footerHeight;
+  const minContentRows = terminalRows < 16 ? 3 : hasTray ? 4 : 5;
+  const maxInputRows = Math.max(1, terminalRows - fixedRows - minContentRows);
+  const preferredInputRows = hasTray ? Math.ceil(terminalRows * 0.55) : 5;
+  const minInputRows = Math.min(hasTray ? 8 : 5, maxInputRows);
+  const cappedPreferredRows = Math.min(hasTray ? 11 : 6, preferredInputRows);
+  return Math.max(1, Math.min(maxInputRows, Math.max(minInputRows, cappedPreferredRows)));
 }
 
 function resolveSelectedCommandInput(
@@ -1307,6 +1417,134 @@ function getInputPlaceholder(answeringQuestion: boolean, awaitingOpenAiApiKey: b
     return "Write your answer and press Enter";
   }
   return "Type /story, /plan, /monitor or add story context";
+}
+
+function getTestSetupFrameworkOptions(
+  suggestions: TestEnvironmentSetupSuggestion[],
+): TestEnvironmentSetupSuggestion["framework"][] {
+  return [...new Set(suggestions.map((suggestion) => suggestion.framework))];
+}
+
+function getTestSetupTargetOptions(
+  suggestions: TestEnvironmentSetupSuggestion[],
+  framework: TestEnvironmentSetupSuggestion["framework"] | null,
+): TestEnvironmentSetupSuggestion[] {
+  if (!framework) {
+    return [];
+  }
+  return suggestions.filter((suggestion) => suggestion.framework === framework);
+}
+
+function getTestSetupOptionCount(
+  mode: TestSetupMode,
+  frameworks: TestEnvironmentSetupSuggestion["framework"][],
+  targets: TestEnvironmentSetupSuggestion[],
+): number {
+  if (mode === "confirm") {
+    return 2;
+  }
+  if (mode === "framework") {
+    return frameworks.length + 1;
+  }
+  if (mode === "target") {
+    return targets.length + 1;
+  }
+  return 1;
+}
+
+function getTestSetupTrayTitle(
+  mode: TestSetupMode,
+  framework: TestEnvironmentSetupSuggestion["framework"] | null,
+): string {
+  if (mode === "framework") {
+    return "Choose Test Framework";
+  }
+  if (mode === "target") {
+    return `Choose ${framework ? formatTestSetupFramework(framework) : "Test"} Folder`;
+  }
+  return "Set Up Testing?";
+}
+
+function getTestSetupTrayItems(
+  mode: TestSetupMode,
+  frameworks: TestEnvironmentSetupSuggestion["framework"][],
+  targets: TestEnvironmentSetupSuggestion[],
+): string[] {
+  if (mode === "framework") {
+    return [
+      ...frameworks.map((framework) => `Use ${formatTestSetupFramework(framework)}`),
+      "Skip setup"
+    ];
+  }
+
+  if (mode === "target") {
+    return [
+      ...targets.map((suggestion) => suggestion.label),
+      "Back to framework selection"
+    ];
+  }
+
+  return [
+    "Yes, guide me through test setup",
+    "Not now"
+  ];
+}
+
+function getTestSetupTrayHelpText(mode: TestSetupMode): string {
+  if (mode === "framework") {
+    return "Use Up/Down to choose a framework, Enter to continue.";
+  }
+  if (mode === "target") {
+    return "Use Up/Down to choose the test folder, Enter to let TDDForge configure it.";
+  }
+  return "Use Up/Down to decide, Enter to continue.";
+}
+
+function formatTestSetupFramework(framework: TestEnvironmentSetupSuggestion["framework"]): string {
+  if (framework === "pytest") {
+    return "Pytest";
+  }
+  if (framework === "jest") {
+    return "Jest";
+  }
+  return "Vitest";
+}
+
+function InputLine({ value, placeholder, width }: { value: string; placeholder: string; width: number }): React.JSX.Element {
+  const prompt = "> ";
+  const contentWidth = Math.max(1, width - prompt.length - 1);
+  const visibleText = value
+    ? trimInputForWidth(value, contentWidth)
+    : placeholder;
+  const suffix = value ? "_" : "";
+
+  return (
+    <Text color={value ? "white" : "gray"} wrap="truncate">
+      {prompt}{visibleText}{suffix}
+    </Text>
+  );
+}
+
+function trimInputForWidth(value: string, width: number): string {
+  if (value.length <= width) {
+    return value;
+  }
+
+  return value.slice(value.length - width);
+}
+
+function getPrintableInput(char: string, key: string): string | null {
+  if (isPrintableInput(char)) {
+    return char;
+  }
+  if (isPrintableInput(key)) {
+    return key;
+  }
+  return null;
+}
+
+function isPrintableInput(value: string): boolean {
+  return value.length === 1 && value >= " " && value !== "\u007f";
 }
 
 function defaultModelForProvider(type: ProviderType): string {
@@ -1436,13 +1674,13 @@ function ScrollablePanel({
 
   return (
     <Box borderStyle="round" borderColor={borderColor} paddingX={1} flexDirection="column" flexGrow={1} overflow="hidden">
-      <Text color={borderColor}>{title}</Text>
+      <Text color={borderColor} wrap="truncate">{title}</Text>
       {visibleLines.map((line, index) => (
         <Text key={`${offset}-${index}-${line.text}`} color={toneToColor(line.tone)}>
           {line.text}
         </Text>
       ))}
-      <Text color="gray">{scrollbar}</Text>
+        <Text color="gray" wrap="truncate">{scrollbar}</Text>
     </Box>
   );
 }
@@ -1484,15 +1722,18 @@ function isSamePanelScroll(left: Record<TuiTab, number>, right: Record<TuiTab, n
   return TUI_TABS.every((tab) => left[tab] === right[tab]);
 }
 
-function BusyProgress({ frame, width }: { frame: number; width: number }): React.JSX.Element {
-  const trackWidth = Math.max(10, Math.min(32, width - 14));
-  const head = frame % trackWidth;
-  const track = Array.from({ length: trackWidth }, (_, index) => {
-    const distance = Math.abs(index - head);
-    return distance <= 1 ? "=" : "-";
-  }).join("");
-
-  return <Text color="yellow">[{track}] running</Text>;
+function BusyProgress({ width }: { width: number }): React.JSX.Element {
+  return (
+    <Box flexDirection="row" alignItems="center" gap={1}>
+      <ProgressBar
+        value={undefined}
+        width={Math.max(10, Math.min(32, width - 14))}
+        trackColor="yellow"
+        showPercent={false}
+      />
+      <Text color="yellow">running</Text>
+    </Box>
+  );
 }
 
 function renderScrollbar(total: number, visibleCount: number, offset: number): string {
@@ -1544,18 +1785,18 @@ function SelectionTray({
 
   return (
     <Box borderStyle="round" borderColor="cyan" paddingX={1} flexDirection="column" overflow="hidden">
-      <Text color="yellow">{title}</Text>
+      <Text color="yellow" wrap="truncate">{title}</Text>
       {start > 0 ? <Text color="gray">...</Text> : null}
       {visibleItems.map((item, visibleIndex) => {
         const itemIndex = start + visibleIndex;
         return (
-          <Text key={`${itemIndex}-${item}`} color={selectedIndex === itemIndex ? "cyan" : "white"}>
+          <Text key={`${itemIndex}-${item}`} color={selectedIndex === itemIndex ? "cyan" : "white"} wrap="truncate">
             {selectedIndex === itemIndex ? "> " : "  "}{item}
           </Text>
         );
       })}
       {end < items.length ? <Text color="gray">...</Text> : null}
-      <Text color="gray">{helpText}</Text>
+      <Text color="gray" wrap="truncate">{helpText}</Text>
     </Box>
   );
 }
@@ -1569,13 +1810,6 @@ function getVisibleRange(total: number, selectedIndex: number, visibleCount: num
   const halfWindow = Math.floor(safeVisibleCount / 2);
   const start = Math.min(Math.max(selectedIndex - halfWindow, 0), total - safeVisibleCount);
   return { start, end: start + safeVisibleCount };
-}
-
-function getTerminalSize(stdout: NodeJS.WriteStream): { columns: number; rows: number } {
-  return {
-    columns: stdout.columns ?? 80,
-    rows: stdout.rows ?? 24
-  };
 }
 
 function CommandSuggestionTray({
@@ -1592,12 +1826,12 @@ function CommandSuggestionTray({
 
   return (
     <Box borderStyle="round" borderColor="yellow" paddingX={1} flexDirection="column" overflow="hidden">
-      <Text color="yellow">Suggestions</Text>
+      <Text color="yellow" wrap="truncate">Suggestions</Text>
       {start > 0 ? <Text color="gray">...</Text> : null}
       {visibleCommands.map((command, visibleIndex) => {
         const commandIndex = start + visibleIndex;
         return (
-          <Text key={command.name} color={selectedIndex === commandIndex ? "cyan" : "white"}>
+          <Text key={command.name} color={selectedIndex === commandIndex ? "cyan" : "white"} wrap="truncate">
             {selectedIndex === commandIndex ? "> " : "  "}{command.usage} - {command.description}
           </Text>
         );
@@ -1647,11 +1881,11 @@ function buildMonitorSuggestions(
   }
 
   if (scan.testFramework === "unknown") {
-    suggestions.push("No test framework detected. Add Vitest or Jest before generating runnable tests.");
+    suggestions.push("No test framework detected. Choose a suggested setup action, or run /scan to show setup choices again.");
   }
 
   if (scan.testDirectories.length === 0) {
-    suggestions.push("No test folder detected. Generated edge-case drafts will stay under .tddforge-out.");
+    suggestions.push("No test folder detected. Setup can create a dedicated tests/, test/, or __tests__/ folder.");
   }
 
   if (!plan) {
@@ -1727,29 +1961,6 @@ function getTestCommand(scan: WorkspaceScanResult): string[] | null {
     return ["yarn", "test"];
   }
   return ["npm", "test"];
-}
-
-async function setupNodeTestEnvironment(workspaceRoot: string, scan: WorkspaceScanResult): Promise<void> {
-  if (scan.projectType !== "node") {
-    throw new Error("Automatic test setup currently supports Node workspaces with package.json.");
-  }
-
-  const packageJsonPath = path.join(workspaceRoot, "package.json");
-  const packageJson = JSON.parse(await readFile(packageJsonPath, "utf8")) as {
-    scripts?: Record<string, string>;
-    devDependencies?: Record<string, string>;
-  };
-  const packageManager = scan.packageManager === "pnpm" ? "pnpm" : scan.packageManager === "yarn" ? "yarn" : "npm";
-  const installArgs = packageManager === "npm" ? ["install", "-D", "vitest"] : ["add", "-D", "vitest"];
-
-  if (!packageJson.devDependencies?.vitest) {
-    await execa(packageManager, installArgs, { cwd: workspaceRoot });
-  }
-
-  packageJson.scripts = packageJson.scripts ?? {};
-  packageJson.scripts.test = packageJson.scripts.test ?? "vitest run";
-  await writeFile(packageJsonPath, `${JSON.stringify(packageJson, null, 2)}\n`, "utf8");
-  await mkdir(path.join(workspaceRoot, "tests"), { recursive: true });
 }
 
 async function getCurrentCommit(workspaceRoot: string): Promise<string | null> {

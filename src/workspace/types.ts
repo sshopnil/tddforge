@@ -10,8 +10,8 @@ export interface WorkspaceScanResult {
   workspaceRoot: string;
   packageManager: PackageManager;
   testFramework: SupportedTestFramework;
-  projectType: "node" | "unknown";
-  language: "typescript" | "javascript" | "mixed" | "unknown";
+  projectType: "node" | "python" | "mixed" | "unknown";
+  language: "typescript" | "javascript" | "python" | "mixed" | "unknown";
   moduleSystem: "esm" | "commonjs" | "unknown";
   packageName?: string;
   scripts: string[];
