@@ -205,7 +205,12 @@ The TUI is repo-aware and keyboard-driven.
 - `Tab`: switch panels
 - `Shift+Tab`: switch panels backward
 - `Up` and `Down`: scroll the active panel when the input is empty
+- `Esc`: clear the input, or interrupt a currently running LLM action
 - `Ctrl+C`, `/exit`, `/quit`: exit immediately
+- Typing `/` shows all available slash commands
+- The session panel is the first/default panel after session selection
+- The input field uses a distinct background and a blinking cursor while typing
+- The footer shows live token usage for the latest LLM call and total token usage for the current TUI session
 
 ### Story Workflow
 
@@ -245,15 +250,19 @@ Behavior:
 
 ### Generated Test Workflow
 
-- `/generate-tests`: write test todos from the latest plan
+- `/generate-tests`: ask the configured LLM to generate production-friendly TDD tests from the latest plan
 - `/generate-tests [folder]`: override the output directory
-- Generated tests try to follow the repository’s existing framework and test placement
+- Generated tests try to follow the repository’s existing framework, test placement, imports, fixtures, naming, assertions, and mocking style
+- TDDForge sends bounded existing test-file content from detected test directories to the LLM so it can avoid duplicate coverage and match the project style
+- The generated-tests agent is instructed to self-check target-language syntax, unused imports, undefined identifiers introduced only by the test, framework API usage, and common lint issues before returning content
 - Generated files are comment-free by design
 
 ### Save and Export
 
 - `/save-plan [name]`: save the latest plan as markdown and JSON under `.tddforge-out/`
 - `/copy`: export a plain-text TUI snapshot to `.tddforge-out/tui-copy.txt`
+- `/copy` strips TUI borders, colors, hidden terminal formatting, and trailing line whitespace
+- Native terminal text selection is enabled by disabling mouse capture in the TUI
 
 ### TUI Slash Commands
 
@@ -335,6 +344,14 @@ Runtime tuning env vars:
 - `TDDFORGE_OLLAMA_NUM_THREAD`
 - `TDDFORGE_OLLAMA_NUM_GPU`
 
+Ollama behavior:
+
+- TDDForge uses `POST /api/chat` with separate system and user messages, `stream: false`, and `format: "json"`
+- Slow CPU-only local model calls do not use a client-side generation timeout
+- Press `Esc` in the TUI to abort a running Ollama/OpenAI action
+- If Ollama returns incomplete JSON, TDDForge retries once with a larger `num_predict` budget and asks the model to return the full object again
+- Token usage is read from Ollama `prompt_eval_count` and `eval_count` when available
+
 Interactive model selection in TUI:
 
 - `/provider setup`
@@ -396,6 +413,7 @@ TDDForge may create or update:
 - `jest.config.mjs`
 - `pytest.ini`
 - test folders such as `tests/`, `test/`, or `__tests__/`
+- LLM-generated test files such as `edge-cases.test.ts` or `test_edge_cases.py`
 
 ## Development Setup
 
@@ -489,7 +507,7 @@ Useful scripts:
 src/
   commands/         Non-interactive CLI commands
   config/           Workspace config loading and schema
-  export/           Plan export and generated test output
+  export/           Plan export and LLM-generated test output
   providers/        Ollama and OpenAI provider implementations
   story-engine/     Prompt building, planning workflow, plan schema
   tui/              Storm TUI, slash commands, sessions, monitor flow

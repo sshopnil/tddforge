@@ -49,14 +49,17 @@ The TUI starts with session selection:
 - Uses Up/Down to select an existing session or `New session`.
 - Enter loads/creates the selected session.
 - Sessions autosave under `.tddforge/sessions/`.
+- After session selection, the `session` tab is first and active by default.
 
 Navigation:
 
-- `Tab` switches panels: `status`, `monitor`, `session`.
+- `Tab` switches panels: `session`, `status`, `monitor`.
 - `Shift+Tab` goes backward.
 - `Up/Down` scroll the active panel when the input is empty and navigate input history while editing text.
+- Typing `/` shows every available slash command; typed prefixes filter the list.
 - When slash command suggestions are visible, `Up/Down` selects a suggestion and Enter runs the highlighted command.
 - Scrollable panels wrap long lines to the current terminal width, clamp scroll position after resize, and auto-follow the latest lines until the user scrolls upward.
+- `Esc` clears input and aborts a currently running LLM-backed busy action through `AbortSignal`.
 - `/exit` and `/quit` should immediately close the TUI, even during unanswered questions.
 
 Story flow:
@@ -84,21 +87,26 @@ Monitor/test flow:
 - When monitor mode sees a relevant source or test file edit, it runs the repo test command once, captures pass/fail/skipped counts, extracts the specific failure message, and stores an LLM-ready failure context.
 - `/test-failure` prints the latest captured failure context so an LLM repair can use the exact failing message; test file edits should still be saved only after user review and confirmation.
 - Test status is initialized on startup and displayed in the status panel.
-- Busy TUI actions show a stable progress bar instead of the old `Working...` text; avoid timer-driven React state animation for long Ollama calls.
+- Busy TUI actions show a left-to-right animated progress bar until the promise resolves or is interrupted.
+- The footer shows latest LLM token usage and total token usage for the current TUI session.
 - Storm exit cleanup should use `useCleanup`; timers/watchers should be explicitly cleared before replacement because normal `useEffect` cleanup is not reliable in Storm's reconciler.
-- Text input is rendered as a bounded custom single-line row; keyboard editing is handled in the app-level `useInput` handler to avoid Storm `TextInput` row overwrites in small terminals.
+- Text input is rendered as a bounded custom single-line row with a distinct background and blinking cursor; keyboard editing is handled in the app-level `useInput` handler to avoid Storm `TextInput` row overwrites in small terminals.
+- The TUI disables mouse capture so terminal-native text selection/copy works.
 
 Provider/model performance:
 
 - Planning prompts compact workspace scan data, cap dependency/test-file lists, and truncate very large story/tree context before sending it to the model.
 - Ollama generation uses `/api/chat` with separate system/user messages and `format: "json"` so local responses match OpenAI-style role-separated output.
+- Ollama generation uses `stream: false`, no client-side timeout for the generation request, and supports interruption through `AbortSignal`.
+- Ollama generation retries once with a larger `num_predict` budget if the first response is incomplete JSON.
 - Ollama generation sends bounded runtime options by default: `num_ctx`, `num_predict`, and CPU thread count.
 - Ollama runtime options can be overridden with `TDDFORGE_OLLAMA_NUM_CTX`, `TDDFORGE_OLLAMA_NUM_PREDICT`, `TDDFORGE_OLLAMA_NUM_THREAD`, and `TDDFORGE_OLLAMA_NUM_GPU`.
+- Token usage is propagated from providers into planner/generated-test results and displayed in the TUI footer.
 
 Copy/export:
 
 - `/copy` writes a clean plain-text snapshot to `.tddforge-out/tui-copy.txt`.
-- Copy output must contain only text content, not TUI borders, colors, or hidden terminal formatting.
+- Copy output must contain only text content, not TUI borders, colors, hidden terminal formatting, or trailing line whitespace.
 
 ## Test Generation Rules
 
@@ -117,6 +125,7 @@ Rules:
 - Before returning generated file content, the generated-tests agent must self-check for target-language syntax errors, unused imports, undefined identifiers introduced only by the test, invalid framework APIs, and common lint violations.
 - Vitest/Jest output should use executable `describe`/`it`/`expect` cases returned by the LLM, not locally rendered `it.todo(...)` cases.
 - Pytest output should use executable test functions returned by the LLM, not locally rendered skipped placeholders.
+- Generated-test responses must be parsed as JSON with `fileName`, `testCount`, and complete file `content`; local code only sanitizes the file name, normalizes content, and writes the returned file.
 - When a workspace has no detected test framework, the TUI starts an interactive agent-user setup flow instead of only warning: confirm setup, choose framework, choose/create the test folder, then let TDDForge write config and enable monitor.
 
 ## Workspace Scan
@@ -143,6 +152,8 @@ It extracts a JSON object and repairs common model formatting issues:
 - smart quotes
 
 If parsing still fails, it throws a clearer `Model response did not contain parseable JSON...` error.
+
+Plan schema defaults local-model omissions for `ambiguities`, `edgeCases`, and scenario `requirementIds` to empty arrays so valid but terse model output does not fail planning.
 
 ## GitHub Actions
 
