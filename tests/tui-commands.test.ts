@@ -21,6 +21,25 @@ describe("parseSlashCommand", () => {
   });
 
   it("suggests commands from slash input", () => {
+    expect(getSlashCommandSuggestions("/").map((command) => command.name)).toEqual([
+      "help",
+      "pwd",
+      "use",
+      "doctor",
+      "scan",
+      "context",
+      "story",
+      "plan",
+      "generate-tests",
+      "monitor",
+      "test-failure",
+      "save-plan",
+      "copy",
+      "config",
+      "provider",
+      "clear",
+      "exit"
+    ]);
     expect(getSlashCommandSuggestions("/mon").map((command) => command.name)).toEqual(["monitor"]);
     expect(getSlashCommandSuggestions("plain text")).toEqual([]);
   });

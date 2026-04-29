@@ -1,7 +1,7 @@
 import { readFile } from "node:fs/promises";
 import type { ResolvedConfig } from "../config/load-config.js";
 import { createProvider } from "../providers/factory.js";
-import type { LlmProvider } from "../providers/types.js";
+import type { LlmProvider, TokenUsage } from "../providers/types.js";
 import { parseModelJsonObject } from "../utils/json.js";
 import { getWorkspaceTreeContext } from "../workspace/context.js";
 import { scanWorkspace } from "../workspace/scan.js";
@@ -13,10 +13,12 @@ export interface PlanWorkflowResult {
   workspace: WorkspaceScanResult;
   folderTree?: string;
   plan: PlanArtifact;
+  tokenUsage?: TokenUsage;
 }
 
 export interface PlanBuildOptions {
   folderTreeContext?: string;
+  signal?: globalThis.AbortSignal;
 }
 
 export async function buildPlanFromStoryFile(
@@ -39,8 +41,11 @@ export async function buildPlanFromStoryText(
   const selectedProvider = provider ?? createProvider(config.provider);
   const folderTree = options?.folderTreeContext ?? await getWorkspaceTreeContext(config.workspaceRoot);
   const prompt = buildPlanningPrompt(storyText, workspace, folderTree);
-  const rawResponse = await selectedProvider.generateText(config.provider, prompt);
-  const plan = planArtifactSchema.parse(parseModelJsonObject(rawResponse));
+  const response = await selectedProvider.generateText(config.provider, {
+    ...prompt,
+    signal: options?.signal
+  });
+  const plan = planArtifactSchema.parse(parseModelJsonObject(response.text));
 
-  return { workspace, folderTree, plan };
+  return { workspace, folderTree, plan, tokenUsage: response.tokenUsage };
 }

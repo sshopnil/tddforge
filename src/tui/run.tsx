@@ -9,7 +9,7 @@ export function runTui(initialWorkspaceRoot: string): void {
     return;
   }
 
-  void render(<TddforgeApp initialWorkspaceRoot={initialWorkspaceRoot} />)
+  void render(<TddforgeApp initialWorkspaceRoot={initialWorkspaceRoot} />, { mouse: false })
     .waitUntilExit()
     .then(() => {
       process.exit(0);

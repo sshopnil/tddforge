@@ -1,6 +1,6 @@
 import OpenAI from "openai";
 import type { ProviderConfig } from "../config/schema.js";
-import type { GenerateTextInput, LlmProvider, ProviderHealth } from "./types.js";
+import type { GenerateTextInput, GenerateTextResult, LlmProvider, ProviderHealth, TokenUsage } from "./types.js";
 
 export class OpenAiProvider implements LlmProvider {
   readonly type = "openai" as const;
@@ -17,7 +17,7 @@ export class OpenAiProvider implements LlmProvider {
     return { ok: true, message: "configuration present" };
   }
 
-  async generateText(config: ProviderConfig, input: GenerateTextInput): Promise<string> {
+  async generateText(config: ProviderConfig, input: GenerateTextInput): Promise<GenerateTextResult> {
     if (config.type !== "openai") {
       throw new Error("Invalid provider config for OpenAI");
     }
@@ -37,8 +37,34 @@ export class OpenAiProvider implements LlmProvider {
         { role: "system", content: input.system },
         { role: "user", content: input.prompt }
       ]
-    });
+    }, { signal: input.signal });
 
-    return response.output_text.trim();
+    return {
+      text: response.output_text.trim(),
+      tokenUsage: readOpenAiTokenUsage(response.usage)
+    };
   }
+}
+
+function readOpenAiTokenUsage(usage: unknown): TokenUsage | undefined {
+  if (!usage || typeof usage !== "object") {
+    return undefined;
+  }
+
+  const record = usage as Record<string, unknown>;
+  return compactTokenUsage({
+    inputTokens: readNumber(record.input_tokens),
+    outputTokens: readNumber(record.output_tokens),
+    totalTokens: readNumber(record.total_tokens)
+  });
+}
+
+function readNumber(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+}
+
+function compactTokenUsage(usage: TokenUsage): TokenUsage | undefined {
+  return usage.inputTokens === undefined && usage.outputTokens === undefined && usage.totalTokens === undefined
+    ? undefined
+    : usage;
 }

@@ -1,4 +1,4 @@
-import { Box, Text, ProgressBar, useApp, useCleanup, useInput, useTerminal } from "@orchetron/storm";
+import { Box, Text, useApp, useCleanup, useInput, useTerminal } from "@orchetron/storm";
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import path from "node:path";
 import { access, mkdir, stat, writeFile } from "node:fs/promises";
@@ -7,6 +7,7 @@ import { execa } from "execa";
 import { generateEdgeCaseTests, type GeneratedTestFiles } from "../export/generated-tests.js";
 import { loadResolvedConfig, type ResolvedConfig } from "../config/load-config.js";
 import type { ProviderConfig } from "../config/schema.js";
+import type { TokenUsage } from "../providers/types.js";
 import { savePlanArtifacts } from "../export/save-plan.js";
 import { createProvider } from "../providers/factory.js";
 import { buildPlanFromStoryFile, buildPlanFromStoryText, type PlanWorkflowResult } from "../story-engine/planner.js";
@@ -41,8 +42,9 @@ type TuiTab = "status" | "monitor" | "session";
 type ProviderSetupMode = "provider" | "model" | null;
 type TestSetupMode = "confirm" | "framework" | "target" | null;
 
-const TUI_TABS: TuiTab[] = ["status", "monitor", "session"];
+const TUI_TABS: TuiTab[] = ["session", "status", "monitor"];
 const PROVIDER_CHOICES: ProviderType[] = ["ollama", "openai"];
+const INPUT_BACKGROUND = "#111827";
 
 interface LogEntry {
   id: number;
@@ -106,6 +108,8 @@ export function TddforgeApp({ initialWorkspaceRoot }: AppProps): React.JSX.Eleme
   const [selectedTestSetupFramework, setSelectedTestSetupFramework] = useState<TestEnvironmentSetupSuggestion["framework"] | null>(null);
   const [selectedTestSetupIndex, setSelectedTestSetupIndex] = useState(0);
   const [latestPlan, setLatestPlan] = useState<PlanWorkflowResult | null>(null);
+  const [latestTokenUsage, setLatestTokenUsage] = useState<TokenUsage | null>(null);
+  const [sessionTokenUsageTotal, setSessionTokenUsageTotal] = useState(0);
   const [latestWorkspaceScan, setLatestWorkspaceScan] = useState<WorkspaceScanResult | null>(null);
   const [latestGeneratedTests, setLatestGeneratedTests] = useState<GeneratedTestFiles | null>(null);
   const [testStatus, setTestStatus] = useState<TestStatus>({
@@ -116,15 +120,18 @@ export function TddforgeApp({ initialWorkspaceRoot }: AppProps): React.JSX.Eleme
     suggestion: "Run /monitor to refresh suggestions after new commits."
   });
   const [folderTreeContext, setFolderTreeContext] = useState<string>("");
-  const [activeTab, setActiveTab] = useState<TuiTab>("status");
+  const [activeTab, setActiveTab] = useState<TuiTab>("session");
   const [lastSeenCommit, setLastSeenCommit] = useState<string | null>(null);
   const [monitorEnabled, setMonitorEnabled] = useState(false);
   const [backgroundTestRun, setBackgroundTestRun] = useState<string>("idle - waiting for file edits");
   const [latestTestRun, setLatestTestRun] = useState<TestRunReport | null>(null);
   const [busy, setBusy] = useState(false);
+  const [uiFrame, setUiFrame] = useState(0);
   const testRunInFlight = useRef(false);
+  const busyAbortControllerRef = useRef<AbortController | null>(null);
   const sessionSaveTimerRef = useRef<NodeJS.Timeout | null>(null);
   const monitorTimerRef = useRef<NodeJS.Timeout | null>(null);
+  const uiFrameTimerRef = useRef<NodeJS.Timeout | null>(null);
   const watcherCleanupRef = useRef<(() => void) | null>(null);
   const [configRevision, setConfigRevision] = useState(0);
   const [providerSetupMode, setProviderSetupMode] = useState<ProviderSetupMode>(null);
@@ -237,8 +244,29 @@ export function TddforgeApp({ initialWorkspaceRoot }: AppProps): React.JSX.Eleme
     if (monitorTimerRef.current) {
       clearInterval(monitorTimerRef.current);
     }
+    if (uiFrameTimerRef.current) {
+      clearInterval(uiFrameTimerRef.current);
+    }
     watcherCleanupRef.current?.();
   });
+
+  useEffect(() => {
+    if (uiFrameTimerRef.current) {
+      clearInterval(uiFrameTimerRef.current);
+      uiFrameTimerRef.current = null;
+    }
+
+    uiFrameTimerRef.current = setInterval(() => {
+      setUiFrame((frame) => (frame + 1) % 1000);
+    }, busy ? 90 : 500);
+
+    return () => {
+      if (uiFrameTimerRef.current) {
+        clearInterval(uiFrameTimerRef.current);
+        uiFrameTimerRef.current = null;
+      }
+    };
+  }, [busy]);
 
   useEffect(() => {
     void prepareSessionSelection();
@@ -507,6 +535,10 @@ export function TddforgeApp({ initialWorkspaceRoot }: AppProps): React.JSX.Eleme
       return;
     }
     if (event.key === "escape") {
+      if (busyAbortControllerRef.current) {
+        busyAbortControllerRef.current.abort();
+        appendLog("muted", "Interrupted running action.");
+      }
       setInput("");
       setHistoryIndex(null);
       setSelectedCommandSuggestionIndex(0);
@@ -575,6 +607,8 @@ export function TddforgeApp({ initialWorkspaceRoot }: AppProps): React.JSX.Eleme
           setSessionChoices([]);
           setAwaitingSessionChoice(true);
           setLatestPlan(null);
+          setLatestTokenUsage(null);
+          setSessionTokenUsageTotal(0);
           setLatestWorkspaceScan(null);
           setLatestGeneratedTests(null);
           setActiveStoryPath(null);
@@ -596,6 +630,7 @@ export function TddforgeApp({ initialWorkspaceRoot }: AppProps): React.JSX.Eleme
           setAwaitingOpenAiApiKey(false);
           setMonitorEnabled(false);
           setFolderTreeContext("");
+          setActiveTab("session");
           appendLog("success", `Switched workspace to ${nextRoot}`);
         });
         return;
@@ -653,9 +688,11 @@ export function TddforgeApp({ initialWorkspaceRoot }: AppProps): React.JSX.Eleme
         });
         return;
       case "plan":
-        await runBusyAction(async () => {
-          const plan = await runPlan(args[0]);
+        await runBusyAction(async (signal) => {
+          const plan = await runPlan(args[0], signal);
           setLatestPlan(plan);
+          setLatestTokenUsage(plan.tokenUsage ?? null);
+          setSessionTokenUsageTotal((total) => total + getTokenUsageTotal(plan.tokenUsage));
           setLatestWorkspaceScan(plan.workspace);
           if (plan.folderTree) {
             setFolderTreeContext(plan.folderTree);
@@ -669,13 +706,13 @@ export function TddforgeApp({ initialWorkspaceRoot }: AppProps): React.JSX.Eleme
             appendLog("info", "Questions ready: select one with Up/Down, then press Enter to answer.");
           }
           if (plan.plan.edgeCases.length > 0) {
-            appendLog("info", "Run /generate-tests to create todo test cases from these edge cases.");
+            appendLog("info", "Run /generate-tests to ask the LLM for production-friendly TDD tests from these edge cases.");
           }
         });
         return;
       case "generate-tests":
-        await runBusyAction(async () => {
-          await runGenerateTests(args[0]);
+        await runBusyAction(async (signal) => {
+          await runGenerateTests(args[0], signal);
         });
         return;
       case "monitor":
@@ -754,6 +791,8 @@ export function TddforgeApp({ initialWorkspaceRoot }: AppProps): React.JSX.Eleme
       setActiveStoryPath(session.activeStoryPath);
       setStoryDraft(session.storyDraft);
       setLatestPlan(session.latestPlan);
+      setLatestTokenUsage(session.latestPlan?.tokenUsage ?? null);
+      setSessionTokenUsageTotal(getTokenUsageTotal(session.latestPlan?.tokenUsage));
       setLatestGeneratedTests(session.latestGeneratedTests);
       setFolderTreeContext(session.folderTreeContext);
       setLogEntries(session.logEntries.length > 0 ? session.logEntries : [
@@ -770,6 +809,8 @@ export function TddforgeApp({ initialWorkspaceRoot }: AppProps): React.JSX.Eleme
     setStoryDraft("");
     setActiveStoryPath(null);
     setLatestPlan(null);
+    setLatestTokenUsage(null);
+    setSessionTokenUsageTotal(0);
     setLatestGeneratedTests(null);
     setPendingQuestions([]);
     setQuestionIndex(0);
@@ -780,6 +821,7 @@ export function TddforgeApp({ initialWorkspaceRoot }: AppProps): React.JSX.Eleme
     ]);
     setAwaitingSessionChoice(false);
     setSessionReady(true);
+    setActiveTab("session");
   }
 
   async function chooseSelectedStory(): Promise<void> {
@@ -1023,14 +1065,16 @@ export function TddforgeApp({ initialWorkspaceRoot }: AppProps): React.JSX.Eleme
     });
   }
 
-  async function runGenerateTests(outputFolder?: string): Promise<void> {
+  async function runGenerateTests(outputFolder?: string, signal?: AbortSignal): Promise<void> {
     if (!latestPlan) {
       throw new Error("No plan available. Run /plan first.");
     }
 
-    const files = await generateEdgeCaseTests(workspaceRoot, latestPlan, outputFolder);
+    const files = await generateEdgeCaseTests(workspaceRoot, latestPlan, activeConfig, outputFolder, undefined, signal);
     setLatestGeneratedTests(files);
-    appendLog("success", `Generated ${files.testCount} edge-case todo test(s) at ${files.testPath}`);
+    setLatestTokenUsage(files.tokenUsage ?? null);
+    setSessionTokenUsageTotal((total) => total + getTokenUsageTotal(files.tokenUsage));
+    appendLog("success", `Generated ${files.testCount} LLM-authored TDD test(s) at ${files.testPath}`);
     void refreshAfterCommitChange("generated edge-case tests", true);
   }
 
@@ -1039,6 +1083,7 @@ export function TddforgeApp({ initialWorkspaceRoot }: AppProps): React.JSX.Eleme
     setStoryDraft(storyText);
     setActiveStoryPath(storyPath);
     setLatestPlan(null);
+    setLatestTokenUsage(null);
     setLatestGeneratedTests(null);
     setPendingQuestions([]);
     setQuestionIndex(0);
@@ -1051,6 +1096,7 @@ export function TddforgeApp({ initialWorkspaceRoot }: AppProps): React.JSX.Eleme
     setStoryDraft(storyText.trim());
     setActiveStoryPath(null);
     setLatestPlan(null);
+    setLatestTokenUsage(null);
     setLatestGeneratedTests(null);
     setPendingQuestions([]);
     setQuestionIndex(0);
@@ -1059,11 +1105,12 @@ export function TddforgeApp({ initialWorkspaceRoot }: AppProps): React.JSX.Eleme
     appendLog("muted", "Type more details to append updates or run /plan.");
   }
 
-  async function runPlan(optionalStoryPath?: string): Promise<PlanWorkflowResult> {
+  async function runPlan(optionalStoryPath?: string, signal?: AbortSignal): Promise<PlanWorkflowResult> {
     if (optionalStoryPath) {
       const storyPath = path.resolve(workspaceRoot, optionalStoryPath);
       return buildPlanFromStoryFile(activeConfig, storyPath, undefined, {
-        folderTreeContext: folderTreeContext || undefined
+        folderTreeContext: folderTreeContext || undefined,
+        signal
       });
     }
 
@@ -1072,18 +1119,24 @@ export function TddforgeApp({ initialWorkspaceRoot }: AppProps): React.JSX.Eleme
     }
 
     return buildPlanFromStoryText(activeConfig, storyDraft, undefined, {
-      folderTreeContext: folderTreeContext || undefined
+      folderTreeContext: folderTreeContext || undefined,
+      signal
     });
   }
 
-  async function runBusyAction(action: () => Promise<void>): Promise<void> {
+  async function runBusyAction(action: (signal: AbortSignal) => Promise<void>): Promise<void> {
+    const controller = new AbortController();
+    busyAbortControllerRef.current = controller;
     setBusy(true);
     try {
-      await action();
+      await action(controller.signal);
     } catch (error) {
-      const message = error instanceof Error ? error.message : "Unknown error";
+      const message = isAbortError(error) ? "Action interrupted." : error instanceof Error ? error.message : "Unknown error";
       appendLog("error", message);
     } finally {
+      if (busyAbortControllerRef.current === controller) {
+        busyAbortControllerRef.current = null;
+      }
       setBusy(false);
     }
   }
@@ -1230,7 +1283,7 @@ export function TddforgeApp({ initialWorkspaceRoot }: AppProps): React.JSX.Eleme
   }
 
   return (
-    <Box flexDirection="column" width={terminalColumns} height={terminalRows} overflow="hidden">
+    <Box flexDirection="column" width={terminalColumns} height={terminalRows} overflow="hidden" userSelect>
       <Box height={headerHeight} paddingX={1} flexDirection="row" justifyContent="space-between" overflow="hidden">
         <Text color="cyan" bold>TDDForge</Text>
         {terminalColumns >= 64 ? (
@@ -1340,6 +1393,7 @@ export function TddforgeApp({ initialWorkspaceRoot }: AppProps): React.JSX.Eleme
             value={input}
             placeholder={getInputPlaceholder(answeringQuestion, awaitingOpenAiApiKey)}
             width={panelContentWidth}
+            frame={uiFrame}
           />
         )}
         <Text color="gray" wrap="truncate">Provider: {activeConfig.provider.type} / {activeConfig.provider.model}</Text>
@@ -1350,13 +1404,13 @@ export function TddforgeApp({ initialWorkspaceRoot }: AppProps): React.JSX.Eleme
             visibleCount={selectionVisibleCount}
           />
         ) : null}
-        {busy ? <BusyProgress width={panelContentWidth} /> : <Text color="gray">Ready</Text>}
+        {busy ? <BusyProgress width={panelContentWidth} frame={uiFrame} /> : <Text color="gray">Ready</Text>}
       </Box>
 
       {footerHeight > 0 ? (
       <Box height={footerHeight} paddingX={1} flexDirection="column" overflow="hidden">
         <Text color="gray" wrap="truncate">
-          Shortcuts: Tab panels Up/Down scroll empty panel /copy /help /doctor /scan /context /story /plan /generate-tests /monitor /test-failure /provider /save-plan /use /exit
+          {formatTokenUsageFooter(latestTokenUsage, sessionTokenUsageTotal, busy, activeConfig.provider.type, activeConfig.provider.model)}
         </Text>
       </Box>
       ) : null}
@@ -1381,9 +1435,43 @@ function getInputBandHeight(terminalRows: number, tabHeight: number, footerHeigh
   const minContentRows = terminalRows < 16 ? 3 : hasTray ? 4 : 5;
   const maxInputRows = Math.max(1, terminalRows - fixedRows - minContentRows);
   const preferredInputRows = hasTray ? Math.ceil(terminalRows * 0.55) : 5;
-  const minInputRows = Math.min(hasTray ? 8 : 5, maxInputRows);
-  const cappedPreferredRows = Math.min(hasTray ? 11 : 6, preferredInputRows);
+  const minInputRows = Math.min(hasTray ? 8 : 6, maxInputRows);
+  const cappedPreferredRows = Math.min(hasTray ? 11 : 7, preferredInputRows);
   return Math.max(1, Math.min(maxInputRows, Math.max(minInputRows, cappedPreferredRows)));
+}
+
+function formatTokenUsageFooter(
+  usage: TokenUsage | null,
+  sessionTotal: number,
+  busy: boolean,
+  providerType: ProviderConfig["type"],
+  model: string,
+): string {
+  const status = busy ? "running" : "idle";
+  if (!usage) {
+    return `Token usage: ${status} | total token used: ${formatTokenCount(sessionTotal)} | ${providerType}/${model} | input: -- output: -- total: --`;
+  }
+
+  return [
+    `Token usage: ${status}`,
+    `session total: ${formatTokenCount(sessionTotal)}`,
+    `${providerType}/${model}`,
+    `input: ${formatTokenCount(usage.inputTokens)}`,
+    `output: ${formatTokenCount(usage.outputTokens)}`,
+    `total: ${formatTokenCount(usage.totalTokens)}`
+  ].join(" | ");
+}
+
+function getTokenUsageTotal(usage: TokenUsage | null | undefined): number {
+  return usage?.totalTokens ?? (usage?.inputTokens ?? 0) + (usage?.outputTokens ?? 0);
+}
+
+function isAbortError(error: unknown): boolean {
+  return error instanceof Error && error.name === "AbortError";
+}
+
+function formatTokenCount(value: number | undefined): string {
+  return value === undefined ? "--" : value.toLocaleString("en-US");
 }
 
 function resolveSelectedCommandInput(
@@ -1510,18 +1598,30 @@ function formatTestSetupFramework(framework: TestEnvironmentSetupSuggestion["fra
   return "Vitest";
 }
 
-function InputLine({ value, placeholder, width }: { value: string; placeholder: string; width: number }): React.JSX.Element {
+function InputLine({
+  value,
+  placeholder,
+  width,
+  frame
+}: {
+  value: string;
+  placeholder: string;
+  width: number;
+  frame: number;
+}): React.JSX.Element {
   const prompt = "> ";
-  const contentWidth = Math.max(1, width - prompt.length - 1);
-  const visibleText = value
-    ? trimInputForWidth(value, contentWidth)
-    : placeholder;
-  const suffix = value ? "_" : "";
+  const contentWidth = Math.max(1, width - prompt.length - 4);
+  const visibleText = value ? trimInputForWidth(value, contentWidth) : placeholder;
+  const cursorVisible = value.length > 0 && frame % 2 === 0;
+  const cursor = cursorVisible ? "|" : " ";
+  const text = `${prompt}${visibleText}${value ? cursor : ""}`.padEnd(Math.max(1, width - 4));
 
   return (
-    <Text color={value ? "white" : "gray"} wrap="truncate">
-      {prompt}{visibleText}{suffix}
-    </Text>
+    <Box borderStyle="round" borderColor="gray" backgroundColor={INPUT_BACKGROUND} paddingX={1} height={3} overflow="hidden">
+      <Text color={value ? "white" : "gray"} bgColor={INPUT_BACKGROUND} wrap="truncate">
+        {text}
+      </Text>
+    </Box>
   );
 }
 
@@ -1722,15 +1822,20 @@ function isSamePanelScroll(left: Record<TuiTab, number>, right: Record<TuiTab, n
   return TUI_TABS.every((tab) => left[tab] === right[tab]);
 }
 
-function BusyProgress({ width }: { width: number }): React.JSX.Element {
+function BusyProgress({ width, frame }: { width: number; frame: number }): React.JSX.Element {
+  const barWidth = Math.max(10, Math.min(32, width - 14));
+  const segmentWidth = Math.max(3, Math.min(8, Math.floor(barWidth / 4)));
+  const maxStart = Math.max(1, barWidth - segmentWidth);
+  const cycle = maxStart * 2;
+  const step = frame % cycle;
+  const start = step <= maxStart ? step : cycle - step;
+  const track = Array.from({ length: barWidth }, (_, index) =>
+    index >= start && index < start + segmentWidth ? "=" : "-"
+  ).join("");
+
   return (
     <Box flexDirection="row" alignItems="center" gap={1}>
-      <ProgressBar
-        value={undefined}
-        width={Math.max(10, Math.min(32, width - 14))}
-        trackColor="yellow"
-        showPercent={false}
-      />
+      <Text color="yellow">[{track}]</Text>
       <Text color="yellow">running</Text>
     </Box>
   );
@@ -1891,9 +1996,9 @@ function buildMonitorSuggestions(
   if (!plan) {
     suggestions.push("Run /plan after loading a story to get edge-case based test suggestions.");
   } else if (!generatedTests) {
-    suggestions.push("Run /generate-tests to create todo specs from the latest edge cases.");
+    suggestions.push("Run /generate-tests to ask the LLM for production-friendly TDD tests from the latest edge cases.");
   } else {
-    suggestions.push("Review generated todos and replace each one with project-specific assertions.");
+    suggestions.push("Review LLM-generated tests, wire any unknown imports to real modules, and keep the production assertions.");
   }
 
   suggestions.push("Use /context before /plan on real repos so suggestions include folder structure.");
@@ -1942,7 +2047,7 @@ function buildLatestTestSuggestion(
   if (!generatedTests) {
     return `Latest plan has ${plan.plan.edgeCases.length} edge case(s). Run /generate-tests.`;
   }
-  return `Last generated ${generatedTests.testCount} todo test(s). Commit code/test changes to refresh monitor suggestions.`;
+  return `Last generated ${generatedTests.testCount} LLM-authored TDD test(s). Commit code/test changes to refresh monitor suggestions.`;
 }
 
 function isTestingEnvironmentReady(scan: WorkspaceScanResult): boolean {
@@ -2010,5 +2115,14 @@ function renderPlainTextSnapshot(snapshot: PlainTextSnapshot): string {
     ...snapshot.logEntries.map((entry) => `[${entry.tone}] ${entry.text}`)
   ];
 
-  return `${lines.join("\n")}\n`;
+  return `${stripTuiCopyArtifacts(lines.join("\n"))}\n`;
+}
+
+function stripTuiCopyArtifacts(value: string): string {
+  return value
+    .replace(/\u001b\[[0-9;?]*[ -/]*[@-~]/g, "")
+    .replace(/[\u2500-\u257f]/g, "")
+    .split("\n")
+    .map((line) => line.replace(/[ \t]+$/g, ""))
+    .join("\n");
 }

@@ -111,9 +111,12 @@ Rules:
 - If existing test files exist, generated files should use the same area/framework style.
 - Fallback directory is `tests`.
 - Generated test files must not include comments.
-- Generated todo cases should come from the plan's `suggestedTestScenarios` first, then add fallback edge-case todos for edge cases not covered by those scenarios.
-- Vitest/Jest output uses `it.todo(...)`.
-- Pytest output uses skipped test functions.
+- Generated TDD cases must be authored by the configured LLM through the dedicated generated-tests system prompt; local code should only choose placement, collect bounded existing test context, validate JSON, and write the returned file.
+- The generated-tests prompt should include current checked-in test file content from detected test directories so the model can match imports, fixtures, naming, assertions, and mocking style while avoiding duplicate coverage.
+- The generated-tests prompt should ask the model to prioritize plan `edgeCases`, use realistic fixtures/inputs, and include production assertions based on observable behavior.
+- Before returning generated file content, the generated-tests agent must self-check for target-language syntax errors, unused imports, undefined identifiers introduced only by the test, invalid framework APIs, and common lint violations.
+- Vitest/Jest output should use executable `describe`/`it`/`expect` cases returned by the LLM, not locally rendered `it.todo(...)` cases.
+- Pytest output should use executable test functions returned by the LLM, not locally rendered skipped placeholders.
 - When a workspace has no detected test framework, the TUI starts an interactive agent-user setup flow instead of only warning: confirm setup, choose framework, choose/create the test folder, then let TDDForge write config and enable monitor.
 
 ## Workspace Scan

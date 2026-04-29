@@ -19,7 +19,7 @@ export const SLASH_COMMANDS: SlashCommandDefinition[] = [
   { name: "context", usage: "/context", description: "Capture folder tree context" },
   { name: "story", usage: "/story [file]", description: "Choose a story from story/, stories/, or docs/" },
   { name: "plan", usage: "/plan [file]", description: "Build a TDD plan" },
-  { name: "generate-tests", usage: "/generate-tests [folder]", description: "Create Vitest todo cases from edge cases" },
+  { name: "generate-tests", usage: "/generate-tests [folder]", description: "Create failing TDD test cases from planned edge cases" },
   { name: "monitor", usage: "/monitor [on|off]", description: "Show live test suggestions for this workspace" },
   { name: "test-failure", usage: "/test-failure", description: "Show the last failing test message prepared for LLM repair" },
   { name: "save-plan", usage: "/save-plan [name]", description: "Save latest plan to .tddforge-out" },
@@ -54,6 +54,10 @@ export function getSlashCommandSuggestions(input: string, limit = 6): SlashComma
   }
 
   const query = trimmed.slice(1).split(/\s+/, 1)[0]?.toLowerCase() ?? "";
+
+  if (!query) {
+    return SLASH_COMMANDS;
+  }
 
   return SLASH_COMMANDS
     .filter((command) => {
